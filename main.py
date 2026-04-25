@@ -180,9 +180,10 @@ st.markdown(
     text-overflow: clip;
   }
   .m-no {
-    background: #f0f0f0;
+    background: #eeeeee;
     border-radius: 6px;
-    height: 22px;
+    min-height: 22px;
+    padding: 3px 2px;
   }
 
   /* ── Search highlight ── */
@@ -291,8 +292,16 @@ def load_data(url: str):
         raw_name = str(name).strip() if pd.notna(name) else ""
         tag_str  = str(tag).strip()  if pd.notna(tag)  else ""
 
-        # Convert numeric column names (date serials) to month strings
-        display_name = serial_to_month(raw_name) if is_numeric(raw_name) else raw_name
+        # Convert date column names (Excel serial numbers OR datetime strings) to "Mmm/YY"
+        if is_numeric(raw_name):
+            display_name = serial_to_month(raw_name)
+        else:
+            # pandas reads Excel dates as "YYYY-MM-DD HH:MM:SS" strings when dtype=str
+            try:
+                dt = pd.to_datetime(raw_name, errors="raise")
+                display_name = f"{_MONTHS_PT[dt.month - 1]}/{str(dt.year)[-2:]}"
+            except Exception:
+                display_name = raw_name
 
         # Deduplicate
         if display_name in seen:
