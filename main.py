@@ -163,26 +163,35 @@ st.markdown(
   /* ── Monthly delivery grid ── */
   .month-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 5px;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 4px;
     margin-top: 4px;
   }
   .m-ok {
     background: #e8f5e9;
-    border-radius: 7px;
-    padding: 4px 3px;
+    border-radius: 6px;
+    padding: 3px 2px;
     text-align: center;
-    font-size: 0.75rem;
+    font-size: 0.68rem;
     color: #2e7d32;
-    font-weight: 600;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: clip;
   }
   .m-no {
-    background: #f5f5f5;
-    border-radius: 7px;
-    padding: 4px 3px;
-    text-align: center;
-    font-size: 0.75rem;
-    color: #bdbdbd;
+    background: #f0f0f0;
+    border-radius: 6px;
+    height: 22px;
+  }
+
+  /* ── Search highlight ── */
+  mark.hl {
+    background: #fff176;
+    color: #212121;
+    border-radius: 3px;
+    padding: 0 2px;
+    font-weight: 700;
   }
 
   /* ── Tier-2 hint ── */
@@ -347,21 +356,42 @@ def cell(row: pd.Series, col: str) -> str:
     return "" if v in ("nan", "None", "") else v
 
 
-def render_record(row: pd.Series) -> None:
+import re as _re
+
+def highlight(text: str, query: str) -> str:
+    """Wrap every occurrence of query in text with a highlight span."""
+    if not query or not text:
+        return text
+    escaped = _re.escape(query)
+    return _re.sub(
+        f"({escaped})",
+        r'<mark class="hl">\1</mark>',
+        text,
+        flags=_re.IGNORECASE,
+    )
+
+
+def render_record(row: pd.Series, query: str = "") -> None:
+    q = query.strip().lower()
+
     nome   = cell(row, "NOME")
     numero = cell(row, "NUMERO")
     tipo   = cell(row, "TIPO")
     status = cell(row, "STATUS")
     cid    = cell(row, "CID 2026")
     alerta = cell(row, "ALERTA PARA A MESA")
+    reserva1     = cell(row, "RESERVA 1")
+    cpf_reserva1 = cell(row, "CPF RESERVA 1")
+    reserva2     = cell(row, "RESERVA 2")
+    cpf_reserva2 = cell(row, "CPF RESERVA 2")
 
     status_cls = "b-ativo" if status.lower() == "ativo" else "b-inativo"
 
     # ── Header: name + number
     html = f"""
     <div class="card">
-      <div class="card-name">{nome or "—"}</div>
-      <div class="card-num">Nº {numero}</div>
+      <div class="card-name">{highlight(nome, q) or "—"}</div>
+      <div class="card-num">Nº {highlight(numero, q)}</div>
     """
 
     # ── Info rows: always show all Tier 1 fields explicitly
@@ -378,16 +408,31 @@ def render_record(row: pd.Series) -> None:
       </div>
       <div class="info-row">
         <span class="info-label">CID 2026</span>
-        <span class="info-value">{cid if cid else '<span class="info-empty">—</span>'}</span>
+        <span class="info-value">{highlight(cid, q) if cid else '<span class="info-empty">—</span>'}</span>
       </div>
     """
+
+    # ── RESERVA rows
+    def reserva_row(label: str, val: str) -> str:
+        v_hl = highlight(val, q) if val else '<span class="info-empty">—</span>'
+        row_cls = ' info-alert-row' if val and q and q in val.lower() else ''
+        return f'''
+      <div class="info-row{row_cls}">
+        <span class="info-label">{label}</span>
+        <span class="info-value">{v_hl}</span>
+      </div>'''
+
+    html += reserva_row("Reserva 1", reserva1)
+    html += reserva_row("CPF Res. 1", cpf_reserva1)
+    html += reserva_row("Reserva 2", reserva2)
+    html += reserva_row("CPF Res. 2", cpf_reserva2)
 
     # ── Alert row — always visible
     if alerta and alerta not in ("0",):
         html += f"""
       <div class="info-row info-alert-row">
         <span class="info-label">⚠️ Alerta</span>
-        <span class="info-value info-alert-val">{alerta}</span>
+        <span class="info-value info-alert-val">{highlight(alerta, q)}</span>
       </div>
         """
     else:
@@ -399,28 +444,29 @@ def render_record(row: pd.Series) -> None:
         """
 
     # ── Any other non-monthly Tier 1 columns not yet handled above
-    already_shown = {"TIPO", "CID 2026", "STATUS", "ALERTA PARA A MESA"}
+    already_shown = {"TIPO", "CID 2026", "STATUS", "ALERTA PARA A MESA",
+                     "RESERVA 1", "CPF RESERVA 1", "RESERVA 2", "CPF RESERVA 2"}
     for col in INFO_COLS:
         if col not in already_shown:
             val = cell(row, col)
             html += f"""
       <div class="info-row">
         <span class="info-label">{col}</span>
-        <span class="info-value">{val if val else '<span class="info-empty">—</span>'}</span>
+        <span class="info-value">{highlight(val, q) if val else '<span class="info-empty">—</span>'}</span>
       </div>
             """
 
     html += "</div>"  # close info-grid
 
-    # ── Monthly deliveries — always render the full grid
+    # ── Monthly deliveries — compact grid: OK = green cell, blank = empty dot
     html += '<div class="sec-title">📦 Histórico de Entregas</div>'
     html += '<div class="month-grid">'
     for mc in MONTH_COLS:
         val = cell(row, mc)
         if val.lower() == "ok":
-            html += f'<div class="m-ok">✓ {mc}</div>'
+            html += f'<div class="m-ok" title="{mc}">✓ {mc}</div>'
         else:
-            html += f'<div class="m-no">{mc}</div>'
+            html += f'<div class="m-no" title="{mc}"></div>'
     html += "</div>"
 
     # ── Tier-2 hint
@@ -503,7 +549,7 @@ if query:
             unsafe_allow_html=True,
         )
         for _, row in results.iterrows():
-            render_record(row)
+            render_record(row, query=query)
 else:
     st.markdown(
         f"""
