@@ -59,17 +59,40 @@ st.markdown(
   .ps-header h1 { margin: 0; font-size: 1.35rem; color: #fff; }
   .ps-header p  { margin: 0.15rem 0 0; font-size: 0.82rem; opacity: 0.85; }
 
-  /* ── Search box ── */
+  /* ── Search box — light mode ── */
   .stTextInput > div > div > input {
     font-size: 16px !important;
     border-radius: 12px !important;
     border: 2px solid #c8e6c9 !important;
     padding: 0.65rem 1rem !important;
     background: #f9fbe7 !important;
+    color: #212121 !important;
   }
   .stTextInput > div > div > input:focus {
     border-color: #388e3c !important;
     box-shadow: 0 0 0 3px rgba(56,142,60,.15) !important;
+  }
+  /* ── Search box — dark mode ── */
+  @media (prefers-color-scheme: dark) {
+    .stTextInput > div > div > input {
+      background: #1a2e1a !important;
+      color: #e8f5e9 !important;
+      border-color: #4caf50 !important;
+    }
+    .stTextInput > div > div > input::placeholder {
+      color: #81c784 !important;
+      opacity: 0.7;
+    }
+    .card { background: #1e2b1e !important; }
+    .info-value { color: #e0e0e0 !important; }
+    .card-name  { color: #a5d6a7 !important; }
+    .card-num   { color: #9e9e9e !important; }
+    .sec-title  { color: #9e9e9e !important; }
+    .info-grid  { border-top-color: #2e3e2e !important; }
+    .info-row   { border-bottom-color: #2a3a2a !important; }
+    .info-alert-row { background: #3e2e10 !important; }
+    .tier2-hint { background: #2e2010 !important; border-color: #795548 !important; color: #bcaaa4 !important; }
+    .m-no { background: #2a352a !important; }
   }
 
   /* ── Result card ── */
@@ -346,13 +369,34 @@ INFO_COLS   = [c for c in TIER1_COLS if c not in MONTH_COLS]
 # ──────────────────────────────────────────────────────────────
 #  SEARCH FUNCTION
 # ──────────────────────────────────────────────────────────────
-def search_df(query: str) -> pd.DataFrame:
+_CPF_COLS = {"CPF", "CPF RESERVA 1", "CPF RESERVA 2"}
+
+
+def _strip_cpf(s: str) -> str:
+    """Remove dots and dashes so raw and formatted CPFs compare equal."""
+    return s.replace(".", "").replace("-", "")
+
+
+def search_df(query: str, cols: list[str] | None = None) -> pd.DataFrame:
     q = query.strip().lower()
     if not q or df is None:
         return pd.DataFrame()
+    if cols is None:
+        cols = SEARCH_COLS
+    q_cpf = _strip_cpf(q)          # normalised query for CPF columns
     mask = pd.Series([False] * len(df), index=df.index)
-    for col in SEARCH_COLS:
-        if col in df.columns:
+    for col in cols:
+        if col not in df.columns:
+            continue
+        if col in _CPF_COLS:
+            # compare stripped stored value against stripped query
+            mask |= (
+                df[col].fillna("")
+                .apply(_strip_cpf)
+                .str.lower()
+                .str.contains(q_cpf, regex=False)
+            )
+        else:
             mask |= df[col].fillna("").str.lower().str.contains(q, regex=False)
     return df[mask].copy()
 
@@ -528,18 +572,21 @@ ou crie o arquivo `secrets.toml` com a chave `GITHUB_RAW_URL`.
 # ──────────────────────────────────────────────────────────────
 #  UI — SEARCH
 # ──────────────────────────────────────────────────────────────
-query = st.text_input(
-    "Buscar",
-    placeholder="🔍  Nome, CPF, número do registro ou reserva…",
+query_num = st.text_input(
+    "Buscar por Número",
+    placeholder="🔢  Número do registro…",
     label_visibility="collapsed",
+    key="q_num",
+)
+query_gen = st.text_input(
+    "Buscar geral",
+    placeholder="🔍  Nome, CPF, reserva…",
+    label_visibility="collapsed",
+    key="q_gen",
 )
 
-# ──────────────────────────────────────────────────────────────
-#  UI — RESULTS
-# ──────────────────────────────────────────────────────────────
-if query:
-    results = search_df(query)
 
+def show_results(results: pd.DataFrame, query: str) -> None:
     if results.empty:
         st.markdown(
             """
@@ -559,12 +606,21 @@ if query:
         )
         for _, row in results.iterrows():
             render_record(row, query=query)
+
+
+# ──────────────────────────────────────────────────────────────
+#  UI — RESULTS
+# ──────────────────────────────────────────────────────────────
+if query_num:
+    show_results(search_df(query_num, cols=["NUMERO"]), query_num)
+elif query_gen:
+    show_results(search_df(query_gen), query_gen)
 else:
     st.markdown(
         f"""
 <div class="empty-state">
   <div class="icon">🔍</div>
-  <p>Digite um nome, CPF, número<br>ou nome de reserva para buscar.</p>
+  <p>Digite um número de registro<br>ou busque por nome, CPF ou reserva.</p>
   <p style="margin-top:1.5rem;font-size:0.8rem;color:#bdbdbd">
     {len(df)} registros · {len(SEARCH_COLS)} campos de busca
   </p>
