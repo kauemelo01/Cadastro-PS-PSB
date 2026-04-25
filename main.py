@@ -377,6 +377,14 @@ def _strip_cpf(s: str) -> str:
     return s.replace(".", "").replace("-", "")
 
 
+def search_numero_exact(query: str) -> pd.DataFrame:
+    """Return only the row whose NUMERO exactly matches the query."""
+    q = query.strip()
+    if not q or df is None or "NUMERO" not in df.columns:
+        return pd.DataFrame()
+    return df[df["NUMERO"].fillna("").str.strip() == q].copy()
+
+
 def search_df(query: str, cols: list[str] | None = None) -> pd.DataFrame:
     q = query.strip().lower()
     if not q or df is None:
@@ -429,6 +437,7 @@ def render_record(row: pd.Series, query: str = "") -> None:
 
     nome   = cell(row, "NOME")
     numero = cell(row, "NUMERO")
+    cpf    = cell(row, "CPF")
     tipo   = cell(row, "TIPO")
     status = cell(row, "STATUS")
     cid    = cell(row, "CID 2026")
@@ -440,11 +449,11 @@ def render_record(row: pd.Series, query: str = "") -> None:
 
     status_cls = "b-ativo" if status.lower() == "ativo" else "b-inativo"
 
-    # ── Header: name + number
+    # ── Header: name + number + CPF
     html = f"""
     <div class="card">
       <div class="card-name">{highlight(nome, q) or "—"}</div>
-      <div class="card-num">Nº {highlight(numero, q)}</div>
+      <div class="card-num">Nº {highlight(numero, q)} &nbsp;·&nbsp; CPF {highlight(cpf, q) if cpf else "—"}</div>
     """
 
     # ── Info rows: always show all Tier 1 fields explicitly
@@ -612,7 +621,7 @@ def show_results(results: pd.DataFrame, query: str) -> None:
 #  UI — RESULTS
 # ──────────────────────────────────────────────────────────────
 if query_num:
-    show_results(search_df(query_num, cols=["NUMERO"]), query_num)
+    show_results(search_numero_exact(query_num), query_num)
 elif query_gen:
     show_results(search_df(query_gen), query_gen)
 else:
