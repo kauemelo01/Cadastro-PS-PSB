@@ -128,6 +128,38 @@ st.markdown(
     color: #5d4037;
   }
 
+  /* ── Info grid (labeled rows) ── */
+  .info-grid {
+    margin-top: 10px;
+    border-top: 1px solid #f0f0f0;
+    padding-top: 8px;
+  }
+  .info-row {
+    display: flex;
+    align-items: flex-start;
+    padding: 5px 0;
+    border-bottom: 1px solid #f9f9f9;
+    gap: 8px;
+  }
+  .info-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #9e9e9e;
+    min-width: 80px;
+    flex-shrink: 0;
+    padding-top: 3px;
+  }
+  .info-value {
+    font-size: 0.9rem;
+    color: #212121;
+    flex: 1;
+  }
+  .info-empty { color: #bdbdbd; font-style: italic; }
+  .info-alert-row { background: #fff8e1; border-radius: 6px; padding: 5px 7px; margin: 2px 0; }
+  .info-alert-val { color: #6d4c41; font-weight: 600; }
+
   /* ── Monthly delivery grid ── */
   .month-grid {
     display: grid;
@@ -325,33 +357,71 @@ def render_record(row: pd.Series) -> None:
 
     status_cls = "b-ativo" if status.lower() == "ativo" else "b-inativo"
 
-    # ── Header
+    # ── Header: name + number
     html = f"""
     <div class="card">
       <div class="card-name">{nome or "—"}</div>
       <div class="card-num">Nº {numero}</div>
-      <div>
-        <span class="badge b-tipo">{tipo}</span>
-        <span class="badge {status_cls}">{status}</span>
-        {f'<span class="badge b-cid">CID {cid}</span>' if cid else ""}
+    """
+
+    # ── Info rows: always show all Tier 1 fields explicitly
+    html += '<div class="info-grid">'
+
+    html += f"""
+      <div class="info-row">
+        <span class="info-label">Tipo</span>
+        <span class="info-value"><span class="badge b-tipo">{tipo or "—"}</span></span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Status</span>
+        <span class="info-value"><span class="badge {status_cls}">{status or "—"}</span></span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">CID 2026</span>
+        <span class="info-value">{cid if cid else '<span class="info-empty">—</span>'}</span>
       </div>
     """
 
-    # ── Alert
+    # ── Alert row — always visible
     if alerta and alerta not in ("0",):
-        html += f'<div class="alert-box">⚠️ {alerta}</div>'
+        html += f"""
+      <div class="info-row info-alert-row">
+        <span class="info-label">⚠️ Alerta</span>
+        <span class="info-value info-alert-val">{alerta}</span>
+      </div>
+        """
+    else:
+        html += """
+      <div class="info-row">
+        <span class="info-label">Alerta</span>
+        <span class="info-value info-empty">Nenhum</span>
+      </div>
+        """
 
-    # ── Monthly deliveries
-    month_data = [(mc, cell(row, mc)) for mc in MONTH_COLS]
-    if any(v for _, v in month_data):
-        html += '<div class="sec-title">📦 Histórico de Entregas</div>'
-        html += '<div class="month-grid">'
-        for mc, val in month_data:
-            if val.lower() == "ok":
-                html += f'<div class="m-ok">✓ {mc}</div>'
-            else:
-                html += f'<div class="m-no">{mc}</div>'
-        html += "</div>"
+    # ── Any other non-monthly Tier 1 columns not yet handled above
+    already_shown = {"TIPO", "CID 2026", "STATUS", "ALERTA PARA A MESA"}
+    for col in INFO_COLS:
+        if col not in already_shown:
+            val = cell(row, col)
+            html += f"""
+      <div class="info-row">
+        <span class="info-label">{col}</span>
+        <span class="info-value">{val if val else '<span class="info-empty">—</span>'}</span>
+      </div>
+            """
+
+    html += "</div>"  # close info-grid
+
+    # ── Monthly deliveries — always render the full grid
+    html += '<div class="sec-title">📦 Histórico de Entregas</div>'
+    html += '<div class="month-grid">'
+    for mc in MONTH_COLS:
+        val = cell(row, mc)
+        if val.lower() == "ok":
+            html += f'<div class="m-ok">✓ {mc}</div>'
+        else:
+            html += f'<div class="m-no">{mc}</div>'
+    html += "</div>"
 
     # ── Tier-2 hint
     html += f"""
