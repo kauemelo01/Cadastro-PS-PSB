@@ -18,7 +18,7 @@ construído com **Streamlit** e hospedado gratuitamente no **Streamlit Community
 
 ---
 
-## 🗂️ Estrutura do arquivo xlsx
+## 🗂️ Estrutura do arquivo .xlsx
 
 O app espera que o arquivo tenha **duas linhas de cabeçalho**:
 
@@ -47,5 +47,5 @@ O app recarrega os dados automaticamente a cada 5 minutos (ou ao recarregar a p�
 
 ```bash
 pip install -r requirements.txt
-streamlit run app.py
+streamlit run main.py
 ```
