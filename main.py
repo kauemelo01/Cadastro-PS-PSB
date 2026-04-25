@@ -432,6 +432,40 @@ def highlight(text: str, query: str) -> str:
     )
 
 
+def highlight_cpf(text: str, query: str) -> str:
+    """Highlight a CPF field, matching regardless of dots/dashes formatting."""
+    if not query or not text:
+        return text
+    # Try direct match first (same format)
+    result = highlight(text, query)
+    if result != text:
+        return result
+    # Fall back to normalised match: if stripped query found in stripped value,
+    # highlight the whole displayed value since formats differ
+    if _strip_cpf(query.lower()) in _strip_cpf(text.lower()):
+        return f'<mark class="hl">{text}</mark>'
+    return text
+
+
+def sort_results(results: pd.DataFrame, query: str) -> pd.DataFrame:
+    """Push rows where NOME or CPF match the query to the top."""
+    if results.empty or not query:
+        return results
+    q = query.strip().lower()
+    q_cpf = _strip_cpf(q)
+
+    def priority(row: pd.Series) -> int:
+        if q in str(row.get("NOME", "")).lower():
+            return 0
+        if q_cpf in _strip_cpf(str(row.get("CPF", "")).lower()):
+            return 0
+        return 1
+
+    results = results.copy()
+    results["_pri"] = results.apply(priority, axis=1)
+    return results.sort_values("_pri", kind="stable").drop(columns=["_pri"])
+
+
 def render_record(row: pd.Series, query: str = "") -> None:
     q = query.strip().lower()
 
@@ -453,7 +487,7 @@ def render_record(row: pd.Series, query: str = "") -> None:
     html = f"""
     <div class="card">
       <div class="card-name">{highlight(nome, q) or "—"}</div>
-      <div class="card-num">Nº {highlight(numero, q)} &nbsp;·&nbsp; CPF {highlight(cpf, q) if cpf else "—"}</div>
+      <div class="card-num">Nº {highlight(numero, q)} &nbsp;·&nbsp; CPF {highlight_cpf(cpf, q) if cpf else "—"}</div>
     """
 
     # ── Info rows: always show all Tier 1 fields explicitly
@@ -474,20 +508,27 @@ def render_record(row: pd.Series, query: str = "") -> None:
       </div>
     """
 
-    # ── RESERVA rows
-    def reserva_row(label: str, val: str) -> str:
-        v_hl = highlight(val, q) if val else '<span class="info-empty">—</span>'
-        row_cls = ' info-alert-row' if val and q and q in val.lower() else ''
+    def reserva_row(label: str, val: str, is_cpf: bool = False) -> str:
+        if val:
+            v_hl = highlight_cpf(val, q) if is_cpf else highlight(val, q)
+            matched = (
+                (_strip_cpf(q) in _strip_cpf(val.lower())) if is_cpf
+                else (q in val.lower())
+            )
+        else:
+            v_hl = '<span class="info-empty">—</span>'
+            matched = False
+        row_cls = ' info-alert-row' if matched else ''
         return f'''
       <div class="info-row{row_cls}">
         <span class="info-label">{label}</span>
         <span class="info-value">{v_hl}</span>
       </div>'''
 
-    html += reserva_row("Reserva 1", reserva1)
-    html += reserva_row("CPF Res. 1", cpf_reserva1)
-    html += reserva_row("Reserva 2", reserva2)
-    html += reserva_row("CPF Res. 2", cpf_reserva2)
+    html += reserva_row("Reserva 1",   reserva1)
+    html += reserva_row("CPF Res. 1",  cpf_reserva1, is_cpf=True)
+    html += reserva_row("Reserva 2",   reserva2)
+    html += reserva_row("CPF Res. 2",  cpf_reserva2, is_cpf=True)
 
     # ── Alert row — always visible
     if alerta and alerta not in ("0",):
@@ -608,6 +649,7 @@ def show_results(results: pd.DataFrame, query: str) -> None:
             unsafe_allow_html=True,
         )
     else:
+        results = sort_results(results, query)
         count = len(results)
         st.markdown(
             f'<div class="result-count">{count} registro{"s" if count > 1 else ""} encontrado{"s" if count > 1 else ""}</div>',
