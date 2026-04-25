@@ -369,7 +369,27 @@ INFO_COLS   = [c for c in TIER1_COLS if c not in MONTH_COLS]
 # ──────────────────────────────────────────────────────────────
 #  SEARCH FUNCTION
 # ──────────────────────────────────────────────────────────────
+import unicodedata as _ud
+
 _CPF_COLS = {"CPF", "CPF RESERVA 1", "CPF RESERVA 2"}
+
+# Map each base vowel/ç/ñ (and its accented variants) to a regex char-class
+# so that searching "Antonio" also matches "Antônio" and vice-versa.
+_ACCENT_CLASS: dict[str, str] = {}
+for _base, _variants in [
+    ("a", "aàáâãäå"), ("e", "eèéêë"), ("i", "iìíîï"),
+    ("o", "oòóôõö"), ("u", "uùúûü"), ("c", "cç"),  ("n", "nñ"),
+]:
+    _cls = f"[{_variants}]"
+    for _ch in _variants:
+        _ACCENT_CLASS[_ch] = _cls
+
+
+def _normalize(s: str) -> str:
+    """Lowercase + strip all combining diacritical marks."""
+    return "".join(
+        c for c in _ud.normalize("NFD", s) if _ud.category(c) != "Mn"
+    ).lower()
 
 
 def _strip_cpf(s: str) -> str:
@@ -386,26 +406,26 @@ def search_numero_exact(query: str) -> pd.DataFrame:
 
 
 def search_df(query: str, cols: list[str] | None = None) -> pd.DataFrame:
-    q = query.strip().lower()
-    if not q or df is None:
+    q_norm = _normalize(query.strip())
+    if not q_norm or df is None:
         return pd.DataFrame()
     if cols is None:
         cols = SEARCH_COLS
-    q_cpf = _strip_cpf(q)          # normalised query for CPF columns
+    q_cpf = _strip_cpf(q_norm)
     mask = pd.Series([False] * len(df), index=df.index)
     for col in cols:
         if col not in df.columns:
             continue
         if col in _CPF_COLS:
-            # compare stripped stored value against stripped query
             mask |= (
-                df[col].fillna("")
-                .apply(_strip_cpf)
-                .str.lower()
+                df[col].fillna("").apply(lambda v: _strip_cpf(_normalize(v)))
                 .str.contains(q_cpf, regex=False)
             )
         else:
-            mask |= df[col].fillna("").str.lower().str.contains(q, regex=False)
+            mask |= (
+                df[col].fillna("").apply(_normalize)
+                .str.contains(q_norm, regex=False)
+            )
     return df[mask].copy()
 
 
@@ -419,30 +439,37 @@ def cell(row: pd.Series, col: str) -> str:
 
 import re as _re
 
+
+def _query_to_pattern(query: str) -> str:
+    """Build a regex pattern from query that matches accented variants."""
+    parts = []
+    for ch in query.lower():
+        if ch in _ACCENT_CLASS:
+            parts.append(_ACCENT_CLASS[ch])
+        else:
+            parts.append(_re.escape(ch))
+    return "".join(parts)
+
+
 def highlight(text: str, query: str) -> str:
-    """Wrap every occurrence of query in text with a highlight span."""
+    """Highlight query in text, accent-insensitive."""
     if not query or not text:
         return text
-    escaped = _re.escape(query)
-    return _re.sub(
-        f"({escaped})",
-        r'<mark class="hl">\1</mark>',
-        text,
-        flags=_re.IGNORECASE,
-    )
+    try:
+        pattern = _query_to_pattern(query)
+        return _re.sub(f"({pattern})", r'<mark class="hl">\1</mark>', text, flags=_re.IGNORECASE)
+    except _re.error:
+        return text
 
 
 def highlight_cpf(text: str, query: str) -> str:
     """Highlight a CPF field, matching regardless of dots/dashes formatting."""
     if not query or not text:
         return text
-    # Try direct match first (same format)
     result = highlight(text, query)
     if result != text:
         return result
-    # Fall back to normalised match: if stripped query found in stripped value,
-    # highlight the whole displayed value since formats differ
-    if _strip_cpf(query.lower()) in _strip_cpf(text.lower()):
+    if _strip_cpf(_normalize(query)) in _strip_cpf(_normalize(text)):
         return f'<mark class="hl">{text}</mark>'
     return text
 
@@ -451,13 +478,13 @@ def sort_results(results: pd.DataFrame, query: str) -> pd.DataFrame:
     """Push rows where NOME or CPF match the query to the top."""
     if results.empty or not query:
         return results
-    q = query.strip().lower()
-    q_cpf = _strip_cpf(q)
+    q_norm = _normalize(query.strip())
+    q_cpf  = _strip_cpf(q_norm)
 
     def priority(row: pd.Series) -> int:
-        if q in str(row.get("NOME", "")).lower():
+        if q_norm in _normalize(str(row.get("NOME", ""))):
             return 0
-        if q_cpf in _strip_cpf(str(row.get("CPF", "")).lower()):
+        if q_cpf in _strip_cpf(_normalize(str(row.get("CPF", "")))):
             return 0
         return 1
 
@@ -466,8 +493,9 @@ def sort_results(results: pd.DataFrame, query: str) -> pd.DataFrame:
     return results.sort_values("_pri", kind="stable").drop(columns=["_pri"])
 
 
-def render_record(row: pd.Series, query: str = "") -> None:
-    q = query.strip().lower()
+def render_record(row: pd.Series, query: str = "", numero_query: str = "") -> None:
+    q     = query.strip().lower()
+    q_num = numero_query.strip()   # used only for NUMERO header highlight
 
     nome   = cell(row, "NOME")
     numero = cell(row, "NUMERO")
@@ -484,10 +512,12 @@ def render_record(row: pd.Series, query: str = "") -> None:
     status_cls = "b-ativo" if status.lower() == "ativo" else "b-inativo"
 
     # ── Header: name + number + CPF
+    # NUMERO highlights via numero_query (NUMERO-bar search) or general query
+    numero_hl = highlight(numero, q_num) if q_num else highlight(numero, q)
     html = f"""
     <div class="card">
       <div class="card-name">{highlight(nome, q) or "—"}</div>
-      <div class="card-num">Nº {highlight(numero, q)} &nbsp;·&nbsp; CPF {highlight_cpf(cpf, q) if cpf else "—"}</div>
+      <div class="card-num">Nº {numero_hl} &nbsp;·&nbsp; CPF {highlight_cpf(cpf, q) if cpf else "—"}</div>
     """
 
     # ── Info rows: always show all Tier 1 fields explicitly
@@ -636,8 +666,18 @@ query_gen = st.text_input(
 )
 
 
-def show_results(results: pd.DataFrame, query: str) -> None:
-    if results.empty:
+def show_results(
+    num_results: pd.DataFrame,
+    gen_results: pd.DataFrame,
+    num_query: str,
+    gen_query: str,
+) -> None:
+    # OR logic: union of both result sets; gen_results take highlight priority
+    gen_idx = set(gen_results.index) if not gen_results.empty else set()
+    num_idx = set(num_results.index) if not num_results.empty else set()
+    all_idx = gen_idx | num_idx
+
+    if not all_idx:
         st.markdown(
             """
 <div class="empty-state">
@@ -648,24 +688,35 @@ def show_results(results: pd.DataFrame, query: str) -> None:
 """,
             unsafe_allow_html=True,
         )
-    else:
-        results = sort_results(results, query)
-        count = len(results)
-        st.markdown(
-            f'<div class="result-count">{count} registro{"s" if count > 1 else ""} encontrado{"s" if count > 1 else ""}</div>',
-            unsafe_allow_html=True,
-        )
-        for _, row in results.iterrows():
-            render_record(row, query=query)
+        return
+
+    # Preserve original df order; sort within that by NOME/CPF priority
+    combined = df.loc[sorted(all_idx)].copy()
+    # Use gen_query for sorting if available, else num_query
+    combined = sort_results(combined, gen_query or num_query)
+
+    count = len(combined)
+    st.markdown(
+        f'<div class="result-count">{count} registro{"s" if count > 1 else ""} encontrado{"s" if count > 1 else ""}</div>',
+        unsafe_allow_html=True,
+    )
+    for idx, row in combined.iterrows():
+        if idx in gen_idx:
+            # General match: highlight all matching fields
+            render_record(row, query=gen_query, numero_query="")
+        else:
+            # NUMERO-only match: highlight only the NUMERO header
+            render_record(row, query="", numero_query=num_query)
 
 
 # ──────────────────────────────────────────────────────────────
 #  UI — RESULTS
 # ──────────────────────────────────────────────────────────────
-if query_num:
-    show_results(search_numero_exact(query_num), query_num)
-elif query_gen:
-    show_results(search_df(query_gen), query_gen)
+num_results = search_numero_exact(query_num) if query_num else pd.DataFrame()
+gen_results = search_df(query_gen)           if query_gen else pd.DataFrame()
+
+if query_num or query_gen:
+    show_results(num_results, gen_results, query_num, query_gen)
 else:
     st.markdown(
         f"""
