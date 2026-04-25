@@ -22,7 +22,7 @@ try:
     GITHUB_RAW_URL = st.secrets["GITHUB_RAW_URL"]
 except Exception:
     GITHUB_RAW_URL = (
-        "https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPO/main/cadastro.xlsx"
+        "https://github.com/kauemelo01/Cadastro-PS-PSB/raw/refs/heads/main/cadastro.xlsx"
     )
 
 # ──────────────────────────────────────────────────────────────
