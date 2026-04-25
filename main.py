@@ -283,6 +283,29 @@ def is_numeric(s: str) -> bool:
 # ──────────────────────────────────────────────────────────────
 #  DATA LOADING
 # ──────────────────────────────────────────────────────────────
+def _fetch_gdrive(url: str) -> bytes:
+    """
+    Download a file from a Google Drive 'uc?export=download' URL.
+    Handles the virus-scan confirmation redirect that Drive adds for larger files.
+    """
+    session = requests.Session()
+    resp = session.get(url, timeout=15)
+    resp.raise_for_status()
+
+    # Drive returns an HTML confirmation page when the file is large.
+    # Detect it by content-type and extract the confirmed download URL.
+    if "text/html" in resp.headers.get("Content-Type", ""):
+        # Look for the confirmation token in the response
+        import re as _re2
+        match = _re2.search(r'confirm=([0-9A-Za-z_\-]+)', resp.text)
+        token = match.group(1) if match else "t"
+        confirmed_url = url + f"&confirm={token}"
+        resp = session.get(confirmed_url, timeout=30)
+        resp.raise_for_status()
+
+    return resp.content
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_data(url: str):
     """
@@ -290,13 +313,12 @@ def load_data(url: str):
     meta = {col_name: tag}  where tag ∈ {"SEARCH", "Tier 1", "Tier 2"}
     """
     try:
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
+        content = _fetch_gdrive(url)
     except Exception as exc:
         return None, None, str(exc)
 
     try:
-        raw = pd.read_excel(BytesIO(resp.content), header=None, dtype=str)
+        raw = pd.read_excel(BytesIO(content), header=None, dtype=str)
     except Exception as exc:
         return None, None, str(exc)
 
