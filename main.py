@@ -91,7 +91,7 @@ st.markdown(
     .sec-title  { color: #9e9e9e !important; }
     .info-grid  { border-top-color: #2e3e2e !important; }
     .info-row   { border-bottom-color: #2a3a2a !important; }
-    .info-alert-row { background: #3e2e10 !important; }
+    .info-alert-row { background: #3e1010 !important; }
     .tier2-hint { background: #2e2010 !important; border-color: #795548 !important; color: #bcaaa4 !important; }
     .m-no { background: #2a352a !important; }
   }
@@ -181,8 +181,8 @@ st.markdown(
     flex: 1;
   }
   .info-empty { color: #bdbdbd; font-style: italic; }
-  .info-alert-row { background: #fff8e1; border-radius: 6px; padding: 5px 7px; margin: 2px 0; }
-  .info-alert-val { color: #6d4c41; font-weight: 600; }
+  .info-alert-row { background: #ffebee; border-radius: 6px; padding: 5px 7px; margin: 2px 0; }
+  .info-alert-val { color: #b71c1c; font-weight: 600; font-size: 0.97rem; }
 
   /* ── Monthly delivery grid ── */
   .month-grid {
