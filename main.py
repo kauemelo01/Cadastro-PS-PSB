@@ -11,6 +11,7 @@ Setup:
 import streamlit as st
 import pandas as pd
 import requests
+import json
 from io import BytesIO
 from datetime import datetime, timedelta
 
@@ -309,21 +310,22 @@ def _fetch_gdrive(url: str) -> bytes:
 @st.cache_data(ttl=300, show_spinner=False)
 def load_data(url: str):
     """
-    Returns (df, meta, error_msg).
-    meta = {col_name: tag}  where tag ∈ {"SEARCH", "Tier 1", "Tier 2"}
+    Returns (df, meta, col_index_map, error_msg).
+    meta          = {col_name: tag}   tag ∈ {"SEARCH", "Tier 1", "Tier 2"}
+    col_index_map = {col_name: 0-based xlsx column index}
     """
     try:
         content = _fetch_gdrive(url)
     except Exception as exc:
-        return None, None, str(exc)
+        return None, None, {}, str(exc)
 
     try:
         raw = pd.read_excel(BytesIO(content), header=None, dtype=str)
     except Exception as exc:
-        return None, None, str(exc)
+        return None, None, {}, str(exc)
 
     if raw.shape[0] < 3:
-        return None, None, "Arquivo sem dados suficientes."
+        return None, None, {}, "Arquivo sem dados suficientes."
 
     tags_row    = raw.iloc[0].tolist()   # Row 0: SEARCH / Tier 1 / Tier 2
     names_row   = raw.iloc[1].tolist()   # Row 1: human-readable column names
@@ -363,14 +365,16 @@ def load_data(url: str):
     df = df.reset_index(drop=True)
 
     meta = dict(zip(final_names, final_tags))
-    return df, meta, None
+    # col_index_map: display_name → 0-based xlsx column index
+    col_index_map = {name: idx for idx, name in enumerate(final_names)}
+    return df, meta, col_index_map, None
 
 
 # ──────────────────────────────────────────────────────────────
 #  LOAD DATA
 # ──────────────────────────────────────────────────────────────
 with st.spinner("Carregando cadastro…"):
-    df, meta, load_error = load_data(GITHUB_RAW_URL)
+    df, meta, col_index_map, load_error = load_data(GITHUB_RAW_URL)
 
 
 def cols_by_tag(tag: str) -> list[str]:
@@ -386,6 +390,149 @@ TIER2_COLS  = cols_by_tag("Tier 2")
 # Monthly columns are Tier 1 columns whose names look like "Mmm/YY"
 MONTH_COLS  = [c for c in TIER1_COLS if "/" in c and len(c) == 6]
 INFO_COLS   = [c for c in TIER1_COLS if c not in MONTH_COLS]
+
+
+# ──────────────────────────────────────────────────────────────
+#  SESSION STATE — in-memory edits overlay
+# ──────────────────────────────────────────────────────────────
+if "edits" not in st.session_state:
+    st.session_state.edits = {}  # {row_idx: {col: value}}
+
+
+def apply_edits(row: pd.Series) -> pd.Series:
+    """Return a copy of row with any in-session edits applied."""
+    overlay = st.session_state.edits.get(row.name, {})
+    if overlay:
+        row = row.copy()
+        for col, val in overlay.items():
+            row[col] = val
+    return row
+
+
+def current_month_col() -> str | None:
+    now = datetime.now()
+    col = f"{_MONTHS_PT[now.month - 1]}/{str(now.year)[-2:]}"
+    return col if col in MONTH_COLS else None
+
+
+# ──────────────────────────────────────────────────────────────
+#  GOOGLE DRIVE WRITE-BACK
+# ──────────────────────────────────────────────────────────────
+def _gdrive_write_enabled() -> bool:
+    """True when both Drive secrets are configured."""
+    return (
+        "GDRIVE_FILE_ID" in st.secrets
+        and "GDRIVE_SA_CREDENTIALS" in st.secrets
+    )
+
+
+def _get_drive_service():
+    from google.oauth2.service_account import Credentials
+    from googleapiclient.discovery import build
+    creds_info = json.loads(st.secrets["GDRIVE_SA_CREDENTIALS"])
+    creds = Credentials.from_service_account_info(
+        creds_info,
+        scopes=["https://www.googleapis.com/auth/drive.file"],
+    )
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+def save_cell_to_drive(row_idx: int, col_name: str, value: str) -> str | None:
+    """
+    Download the xlsx from Drive, update one cell, re-upload.
+    Returns None on success, or an error string on failure.
+    df row_idx is 0-based; xlsx has 2 header rows → xlsx row = row_idx + 3 (1-based).
+    """
+    try:
+        from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+        import openpyxl
+
+        file_id = st.secrets["GDRIVE_FILE_ID"]
+        service = _get_drive_service()
+
+        # ── Download current file
+        req = service.files().get_media(fileId=file_id)
+        dl_buf = BytesIO()
+        downloader = MediaIoBaseDownload(dl_buf, req)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        dl_buf.seek(0)
+
+        # ── Patch the cell
+        wb = openpyxl.load_workbook(dl_buf)
+        ws = wb.active
+        xlsx_row = row_idx + 3           # 2 header rows + 1-based index
+        xlsx_col = col_index_map[col_name] + 1   # 0-based → 1-based
+        ws.cell(row=xlsx_row, column=xlsx_col, value=value)
+
+        # ── Upload patched file
+        up_buf = BytesIO()
+        wb.save(up_buf)
+        up_buf.seek(0)
+        media = MediaIoBaseUpload(
+            up_buf,
+            mimetype=(
+                "application/vnd.openxmlformats-officedocument"
+                ".spreadsheetml.sheet"
+            ),
+            resumable=False,
+        )
+        service.files().update(fileId=file_id, media_body=media).execute()
+
+        # ── Clear cache so next render fetches the fresh file
+        load_data.clear()
+        return None
+
+    except Exception as exc:
+        return str(exc)
+
+
+# ──────────────────────────────────────────────────────────────
+#  DIALOGS
+# ──────────────────────────────────────────────────────────────
+@st.dialog("Confirmar entrega")
+def confirm_month_dialog(row_idx: int, month_col: str, nome: str, numero: str) -> None:
+    st.markdown(
+        f"Confirmar entrega de **{month_col}** para:<br>"
+        f"<b>{nome}</b> &nbsp;·&nbsp; Nº {numero}",
+        unsafe_allow_html=True,
+    )
+    st.write("")
+    col1, col2 = st.columns(2)
+    if col1.button("✅ Confirmar", use_container_width=True, type="primary"):
+        # Update in-session overlay immediately
+        st.session_state.edits.setdefault(row_idx, {})[month_col] = "OK"
+        # Persist to Drive
+        if _gdrive_write_enabled():
+            with st.spinner("Salvando no Google Drive…"):
+                err = save_cell_to_drive(row_idx, month_col, "OK")
+            if err:
+                st.error(f"Erro ao salvar: {err}")
+                st.stop()
+        st.rerun()
+    if col2.button("❌ Cancelar", use_container_width=True):
+        st.rerun()
+
+
+@st.dialog("Editar CID 2026")
+def edit_cid_dialog(row_idx: int, nome: str, current_cid: str) -> None:
+    st.markdown(f"Editando CID de **{nome}**")
+    new_cid = st.text_input("CID 2026", value=current_cid, max_chars=20)
+    st.write("")
+    col1, col2 = st.columns(2)
+    if col1.button("💾 Salvar", use_container_width=True, type="primary"):
+        val = new_cid.strip()
+        st.session_state.edits.setdefault(row_idx, {})["CID 2026"] = val
+        if _gdrive_write_enabled():
+            with st.spinner("Salvando no Google Drive…"):
+                err = save_cell_to_drive(row_idx, "CID 2026", val)
+            if err:
+                st.error(f"Erro ao salvar: {err}")
+                st.stop()
+        st.rerun()
+    if col2.button("❌ Cancelar", use_container_width=True):
+        st.rerun()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -516,8 +663,11 @@ def sort_results(results: pd.DataFrame, query: str) -> pd.DataFrame:
 
 
 def render_record(row: pd.Series, query: str = "", numero_query: str = "") -> None:
+    row = apply_edits(row)
+    row_idx = row.name
+
     q     = query.strip().lower()
-    q_num = numero_query.strip()   # used only for NUMERO header highlight
+    q_num = numero_query.strip()
 
     nome   = cell(row, "NOME")
     numero = cell(row, "NUMERO")
@@ -636,6 +786,31 @@ def render_record(row: pd.Series, query: str = "", numero_query: str = "") -> No
 
     st.markdown(html, unsafe_allow_html=True)
 
+    # ── Action buttons
+    cur_month = current_month_col()
+    month_ok  = cur_month and cell(row, cur_month).lower() == "ok"
+
+    btn_cols = st.columns(2)
+    with btn_cols[0]:
+        if st.button("✏️ Editar CID", key=f"cid_{row_idx}", use_container_width=True):
+            edit_cid_dialog(row_idx, nome, cid)
+    with btn_cols[1]:
+        if cur_month:
+            if month_ok:
+                st.button(
+                    f"✅ {cur_month} OK",
+                    key=f"flag_{row_idx}",
+                    use_container_width=True,
+                    disabled=True,
+                )
+            else:
+                if st.button(
+                    f"📦 Marcar {cur_month}",
+                    key=f"flag_{row_idx}",
+                    use_container_width=True,
+                ):
+                    confirm_month_dialog(row_idx, cur_month, nome, numero)
+
 
 # ──────────────────────────────────────────────────────────────
 #  UI — HEADER
@@ -649,6 +824,14 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
+
+# Show Drive write status — only when secrets are missing
+if not _gdrive_write_enabled():
+    st.warning(
+        "⚠️ Salvamento automático desativado. "
+        "Configure `GDRIVE_FILE_ID` e `GDRIVE_SA_CREDENTIALS` nos Secrets para habilitar.",
+        icon="🔒",
+    )
 
 # ──────────────────────────────────────────────────────────────
 #  UI — ERROR STATE
