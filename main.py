@@ -221,6 +221,39 @@ st.markdown(
     font-weight: 700;
   }
 
+  /* ── Admin footer (discreet) ── */
+  .admin-footer { margin-top: 2.5rem; }
+  .admin-badge {
+    font-size: 0.78rem;
+    color: #2e7d32;
+    font-weight: 700;
+    padding-top: 8px;
+  }
+  /* Render the admin link as plain faint text, not a button */
+  .st-key-admin_login_link button {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: #c5c5c5 !important;
+    font-size: 0.72rem !important;
+    font-weight: 400 !important;
+    padding: 2px 0 !important;
+    min-height: 0 !important;
+  }
+  .st-key-admin_login_link button:hover {
+    color: #388e3c !important;
+    text-decoration: underline;
+  }
+  .st-key-admin_login_link button p {
+    font-size: 0.72rem !important;
+    font-weight: 400 !important;
+  }
+  .st-key-admin_logout button {
+    font-size: 0.75rem !important;
+    padding: 2px 8px !important;
+    min-height: 0 !important;
+  }
+
   /* ── Empty state ── */
   .empty-state {
     text-align: center;
@@ -389,6 +422,16 @@ INFO_COLS   = [c for c in TIER1_COLS if c not in MONTH_COLS]
 if "edits" not in st.session_state:
     st.session_state.edits = {}  # {row_idx: {col: value}}
 
+if "is_admin" not in st.session_state:
+    st.session_state.is_admin = False
+
+
+# Admin password — read from secrets only. If unset, admin access is disabled.
+try:
+    ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
+except Exception:
+    ADMIN_PASSWORD = None
+
 
 def apply_edits(row: pd.Series) -> pd.Series:
     """Return a copy of row with any in-session edits applied."""
@@ -513,6 +556,31 @@ def confirm_month_dialog(row_idx: int, month_col: str, nome: str, numero: str) -
                 st.error(f"Erro ao salvar: {err}")
                 st.stop()
         st.rerun()
+    if col2.button("❌ Cancelar", use_container_width=True):
+        st.rerun()
+
+
+@st.dialog("Acesso Administrativo")
+def admin_login_dialog() -> None:
+    if not ADMIN_PASSWORD:
+        st.error(
+            "Acesso administrativo indisponível: "
+            "`ADMIN_PASSWORD` não está configurada nos Secrets."
+        )
+        if st.button("Fechar", use_container_width=True):
+            st.rerun()
+        return
+
+    st.markdown("Informe a senha para habilitar a edição de dados.")
+    pwd = st.text_input("Senha", type="password", key="admin_pwd_input")
+    st.write("")
+    col1, col2 = st.columns(2)
+    if col1.button("🔓 Entrar", use_container_width=True, type="primary"):
+        if pwd and pwd == ADMIN_PASSWORD:
+            st.session_state.is_admin = True
+            st.rerun()
+        else:
+            st.error("Senha incorreta.")
     if col2.button("❌ Cancelar", use_container_width=True):
         st.rerun()
 
@@ -842,7 +910,14 @@ def render_record(row: pd.Series, query: str = "", numero_query: str = "") -> No
 
     btn_cols = st.columns(2)
     with btn_cols[0]:
-        if st.button("✏️ Editar Dados", key=f"cid_{row_idx}", use_container_width=True):
+        is_admin = st.session_state.get("is_admin", False)
+        if st.button(
+            "✏️ Editar Dados" if is_admin else "🔒 Editar Dados",
+            key=f"cid_{row_idx}",
+            use_container_width=True,
+            disabled=not is_admin,
+            help=None if is_admin else "Requer acesso administrativo",
+        ):
             edit_dados_dialog(row_idx, nome, {
                 "TIPO":               tipo,
                 "STATUS":             status,
@@ -994,3 +1069,23 @@ else:
 """,
         unsafe_allow_html=True,
     )
+
+# ──────────────────────────────────────────────────────────────
+#  UI — ADMIN FOOTER (discreet)
+# ──────────────────────────────────────────────────────────────
+st.markdown('<div class="admin-footer">', unsafe_allow_html=True)
+
+if st.session_state.get("is_admin", False):
+    fcol1, fcol2 = st.columns([3, 2])
+    fcol1.markdown(
+        '<div class="admin-badge">🔓 Modo administrador ativo</div>',
+        unsafe_allow_html=True,
+    )
+    if fcol2.button("Sair", key="admin_logout", use_container_width=True):
+        st.session_state.is_admin = False
+        st.rerun()
+else:
+    if st.button("· acesso administrativo ·", key="admin_login_link"):
+        admin_login_dialog()
+
+st.markdown("</div>", unsafe_allow_html=True)
