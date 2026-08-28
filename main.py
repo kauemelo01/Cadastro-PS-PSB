@@ -344,7 +344,7 @@ def load_data(url: str):
         return None, None, {}, str(exc)
 
     try:
-        raw = pd.read_excel(BytesIO(content), header=None, dtype=str)
+        raw = pd.read_excel(BytesIO(content), sheet_name=0, header=None, dtype=str)
     except Exception as exc:
         return None, None, {}, str(exc)
 
@@ -498,7 +498,7 @@ def save_cells_to_drive(row_idx: int, changes: dict[str, str]) -> str | None:
 
         # ── Patch every changed cell
         wb = openpyxl.load_workbook(dl_buf)
-        ws = wb.active
+        ws = wb.worksheets[0]          # main data always lives on the first sheet
         xlsx_row = row_idx + 3                       # 2 header rows + 1-based index
         for col_name, value in changes.items():
             if col_name not in col_index_map:
@@ -534,6 +534,99 @@ def save_cell_to_drive(row_idx: int, col_name: str, value: str) -> str | None:
 
 
 # ──────────────────────────────────────────────────────────────
+#  CESTAS EXTRAS (Sheet2)
+# ──────────────────────────────────────────────────────────────
+EXTRAS_SHEET   = "Sheet2"
+EXTRAS_HEADERS = ["NÚMERO", "NOME", "CPF", "TELEFONE", "MOTIVO"]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_extras(url: str) -> pd.DataFrame:
+    """Read the Cestas Extras sheet. Returns an empty frame if absent/unreadable."""
+    try:
+        content = _fetch_gdrive(url)
+        extras = pd.read_excel(
+            BytesIO(content), sheet_name=EXTRAS_SHEET, dtype=str
+        )
+        return extras.fillna("")
+    except Exception:
+        return pd.DataFrame(columns=EXTRAS_HEADERS)
+
+
+def next_extra_numero(extras: pd.DataFrame) -> int:
+    """Next sequential number for a new Cesta Extra (max existing + 1)."""
+    if extras.empty or "NÚMERO" not in extras.columns:
+        return 1
+    nums = pd.to_numeric(extras["NÚMERO"], errors="coerce").dropna()
+    return int(nums.max()) + 1 if len(nums) else 1
+
+
+def save_extra_to_drive(record: dict[str, str]) -> str | None:
+    """
+    Append one Cesta Extra row to Sheet2 of the xlsx on Drive.
+    Creates the sheet with headers if it does not exist.
+    Returns None on success, or an error string on failure.
+    """
+    try:
+        from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+        import openpyxl
+
+        file_id = st.secrets["GDRIVE_FILE_ID"]
+        service = _get_drive_service()
+
+        # ── Download current file
+        req = service.files().get_media(fileId=file_id)
+        dl_buf = BytesIO()
+        downloader = MediaIoBaseDownload(dl_buf, req)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        dl_buf.seek(0)
+
+        wb = openpyxl.load_workbook(dl_buf)
+
+        # ── Get or create the extras sheet
+        if EXTRAS_SHEET in wb.sheetnames:
+            ws = wb[EXTRAS_SHEET]
+        else:
+            ws = wb.create_sheet(EXTRAS_SHEET)
+            for col, header in enumerate(EXTRAS_HEADERS, start=1):
+                ws.cell(row=1, column=col, value=header)
+
+        # ── Find the first truly empty row (max_row can overcount blank rows)
+        target_row = 2
+        for r in range(2, ws.max_row + 2):
+            if all(ws.cell(row=r, column=c).value in (None, "")
+                   for c in range(1, len(EXTRAS_HEADERS) + 1)):
+                target_row = r
+                break
+
+        for col, header in enumerate(EXTRAS_HEADERS, start=1):
+            ws.cell(row=target_row, column=col, value=record.get(header, ""))
+
+        # ── Upload patched file
+        up_buf = BytesIO()
+        wb.save(up_buf)
+        up_buf.seek(0)
+        media = MediaIoBaseUpload(
+            up_buf,
+            mimetype=(
+                "application/vnd.openxmlformats-officedocument"
+                ".spreadsheetml.sheet"
+            ),
+            resumable=False,
+        )
+        service.files().update(fileId=file_id, media_body=media).execute()
+
+        load_data.clear()
+        load_extras.clear()
+        return None
+
+    except Exception as exc:
+        return str(exc)
+
+
+# ──────────────────────────────────────────────────────────────
 #  DIALOGS
 # ──────────────────────────────────────────────────────────────
 @st.dialog("Confirmar entrega")
@@ -557,6 +650,70 @@ def confirm_month_dialog(row_idx: int, month_col: str, nome: str, numero: str) -
                 st.stop()
         st.rerun()
     if col2.button("❌ Cancelar", use_container_width=True):
+        st.rerun()
+
+
+@st.dialog("Dar Cesta Extra")
+def cesta_extra_dialog(suggested_num: int) -> None:
+    st.markdown("Registrar uma nova cesta extra.")
+
+    num = st.text_input(
+        "NÚMERO *", value=str(suggested_num), max_chars=10, key="ce_num"
+    )
+    nome = st.text_input("NOME *", key="ce_nome")
+    cpf  = st.text_input("CPF", key="ce_cpf")
+    tel  = st.text_input("TELEFONE", key="ce_tel")
+    motivo = st.text_area("MOTIVO *", height=90, key="ce_motivo")
+
+    st.caption("* campos obrigatórios")
+
+    # ── Validation
+    errors: list[str] = []
+    if not num.strip():
+        errors.append("NÚMERO é obrigatório.")
+    elif not num.strip().isdigit():
+        errors.append("NÚMERO deve conter apenas dígitos.")
+    if not nome.strip():
+        errors.append("NOME é obrigatório.")
+    if not motivo.strip():
+        errors.append("MOTIVO é obrigatório.")
+
+    st.write("")
+    col1, col2 = st.columns(2)
+    save_clicked   = col1.button("💾 Salvar",  use_container_width=True, type="primary")
+    cancel_clicked = col2.button("❌ Cancelar", use_container_width=True)
+
+    if cancel_clicked:
+        st.rerun()
+
+    if save_clicked:
+        if errors:
+            for e in errors:
+                st.error(e)
+            st.stop()
+
+        record = {
+            "NÚMERO":   num.strip(),
+            "NOME":     nome.strip(),
+            "CPF":      cpf.strip(),
+            "TELEFONE": tel.strip(),
+            "MOTIVO":   motivo.strip(),
+        }
+
+        if not _gdrive_write_enabled():
+            st.error(
+                "Salvamento indisponível: credenciais do Google Drive "
+                "não configuradas."
+            )
+            st.stop()
+
+        with st.spinner("Salvando no Google Drive…"):
+            err = save_extra_to_drive(record)
+        if err:
+            st.error(f"Erro ao salvar: {err}")
+            st.stop()
+
+        st.session_state.extra_saved = f"Cesta extra Nº {record['NÚMERO']} registrada."
         st.rerun()
 
 
@@ -1076,6 +1233,15 @@ else:
 st.markdown('<div class="admin-footer">', unsafe_allow_html=True)
 
 if st.session_state.get("is_admin", False):
+    # ── Success toast from a previous save
+    if st.session_state.get("extra_saved"):
+        st.success(f"✅ {st.session_state.pop('extra_saved')}")
+
+    if st.button("🧺 Dar Cesta Extra", key="btn_cesta_extra",
+                 use_container_width=True, type="primary"):
+        extras = load_extras(GITHUB_RAW_URL)
+        cesta_extra_dialog(next_extra_numero(extras))
+
     fcol1, fcol2 = st.columns([3, 2])
     fcol1.markdown(
         '<div class="admin-badge">🔓 Modo administrador ativo</div>',
