@@ -93,7 +93,6 @@ st.markdown(
     .info-row   { border-bottom-color: #2a3a2a !important; }
     .info-alert-row { background: #3e2e10 !important; }
     .info-alerta-row { background: #3e1010 !important; }
-    .tier2-hint { background: #2e2010 !important; border-color: #795548 !important; color: #bcaaa4 !important; }
     .m-no { background: #2a352a !important; }
   }
 
@@ -220,17 +219,6 @@ st.markdown(
     border-radius: 3px;
     padding: 0 2px;
     font-weight: 700;
-  }
-
-  /* ── Tier-2 hint ── */
-  .tier2-hint {
-    background: #fff3e0;
-    border: 1px solid #ffcc80;
-    border-radius: 9px;
-    padding: 8px 11px;
-    margin-top: 10px;
-    font-size: 0.83rem;
-    color: #6d4c41;
   }
 
   /* ── Empty state ── */
@@ -440,12 +428,15 @@ def _get_drive_service():
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
-def save_cell_to_drive(row_idx: int, col_name: str, value: str) -> str | None:
+def save_cells_to_drive(row_idx: int, changes: dict[str, str]) -> str | None:
     """
-    Download the xlsx from Drive, update one cell, re-upload.
+    Download the xlsx from Drive, update one or more cells in a single row,
+    then re-upload. One network roundtrip regardless of how many fields changed.
     Returns None on success, or an error string on failure.
     df row_idx is 0-based; xlsx has 2 header rows → xlsx row = row_idx + 3 (1-based).
     """
+    if not changes:
+        return None
     try:
         from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
         import openpyxl
@@ -462,12 +453,15 @@ def save_cell_to_drive(row_idx: int, col_name: str, value: str) -> str | None:
             _, done = downloader.next_chunk()
         dl_buf.seek(0)
 
-        # ── Patch the cell
+        # ── Patch every changed cell
         wb = openpyxl.load_workbook(dl_buf)
         ws = wb.active
-        xlsx_row = row_idx + 3           # 2 header rows + 1-based index
-        xlsx_col = col_index_map[col_name] + 1   # 0-based → 1-based
-        ws.cell(row=xlsx_row, column=xlsx_col, value=value)
+        xlsx_row = row_idx + 3                       # 2 header rows + 1-based index
+        for col_name, value in changes.items():
+            if col_name not in col_index_map:
+                continue
+            xlsx_col = col_index_map[col_name] + 1   # 0-based → 1-based
+            ws.cell(row=xlsx_row, column=xlsx_col, value=value)
 
         # ── Upload patched file
         up_buf = BytesIO()
@@ -489,6 +483,11 @@ def save_cell_to_drive(row_idx: int, col_name: str, value: str) -> str | None:
 
     except Exception as exc:
         return str(exc)
+
+
+def save_cell_to_drive(row_idx: int, col_name: str, value: str) -> str | None:
+    """Single-cell convenience wrapper around save_cells_to_drive."""
+    return save_cells_to_drive(row_idx, {col_name: value})
 
 
 # ──────────────────────────────────────────────────────────────
@@ -518,18 +517,74 @@ def confirm_month_dialog(row_idx: int, month_col: str, nome: str, numero: str) -
         st.rerun()
 
 
-@st.dialog("Editar CID 2026")
-def edit_cid_dialog(row_idx: int, nome: str, current_cid: str) -> None:
-    st.markdown(f"Editando CID de **{nome}**")
-    new_cid = st.text_input("CID 2026", value=current_cid, max_chars=20)
+@st.dialog("Editar Dados")
+def edit_dados_dialog(row_idx: int, nome: str, current: dict[str, str]) -> None:
+    """Edit all Tier 1 editable fields for one record."""
+    st.markdown(f"Editando dados de **{nome}**")
+
+    # ── Tipo: dropdown of values already present in the data
+    tipo_opts = sorted({v for v in df["TIPO"].fillna("").astype(str).str.strip() if v}) \
+        if "TIPO" in df.columns else []
+    cur_tipo = current.get("TIPO", "")
+    if cur_tipo and cur_tipo not in tipo_opts:
+        tipo_opts.insert(0, cur_tipo)
+    if "" not in tipo_opts:
+        tipo_opts.insert(0, "")
+    new_tipo = st.selectbox(
+        "Tipo", tipo_opts,
+        index=tipo_opts.index(cur_tipo) if cur_tipo in tipo_opts else 0,
+    )
+
+    # ── Status: fixed binary
+    status_opts = ["", "Ativo", "Inativo"]
+    cur_status = current.get("STATUS", "")
+    if cur_status and cur_status not in status_opts:
+        status_opts.append(cur_status)
+    new_status = st.selectbox(
+        "Status", status_opts,
+        index=status_opts.index(cur_status) if cur_status in status_opts else 0,
+    )
+
+    new_cid = st.text_input("CID 2026", value=current.get("CID 2026", ""), max_chars=40)
+
+    st.markdown("**Reservas**")
+    new_res1  = st.text_input("Reserva 1",  value=current.get("RESERVA 1", ""))
+    new_cpf1  = st.text_input("CPF Res. 1", value=current.get("CPF RESERVA 1", ""))
+    new_res2  = st.text_input("Reserva 2",  value=current.get("RESERVA 2", ""))
+    new_cpf2  = st.text_input("CPF Res. 2", value=current.get("CPF RESERVA 2", ""))
+
+    new_alerta = st.text_area(
+        "⚠️ Alerta para a Mesa",
+        value=current.get("ALERTA PARA A MESA", ""),
+        height=80,
+    )
+
+    proposed = {
+        "TIPO":               new_tipo.strip(),
+        "STATUS":             new_status.strip(),
+        "CID 2026":           new_cid.strip(),
+        "RESERVA 1":          new_res1.strip(),
+        "CPF RESERVA 1":      new_cpf1.strip(),
+        "RESERVA 2":          new_res2.strip(),
+        "CPF RESERVA 2":      new_cpf2.strip(),
+        "ALERTA PARA A MESA": new_alerta.strip(),
+    }
+    # Only persist fields that actually changed
+    changed = {k: v for k, v in proposed.items() if v != current.get(k, "")}
+
     st.write("")
+    if changed:
+        st.caption(f"{len(changed)} campo(s) alterado(s): " + ", ".join(changed.keys()))
+    else:
+        st.caption("Nenhuma alteração.")
+
     col1, col2 = st.columns(2)
-    if col1.button("💾 Salvar", use_container_width=True, type="primary"):
-        val = new_cid.strip()
-        st.session_state.edits.setdefault(row_idx, {})["CID 2026"] = val
+    if col1.button("💾 Salvar", use_container_width=True, type="primary",
+                   disabled=not changed):
+        st.session_state.edits.setdefault(row_idx, {}).update(changed)
         if _gdrive_write_enabled():
             with st.spinner("Salvando no Google Drive…"):
-                err = save_cell_to_drive(row_idx, "CID 2026", val)
+                err = save_cells_to_drive(row_idx, changed)
             if err:
                 st.error(f"Erro ao salvar: {err}")
                 st.stop()
@@ -777,15 +832,7 @@ def render_record(row: pd.Series, query: str = "", numero_query: str = "") -> No
             html += f'<div class="m-no" title="{mc}"></div>'
     html += "</div>"
 
-    # ── Tier-2 hint
-    html += f"""
-      <div class="tier2-hint">
-        🔒 <strong>Dados adicionais disponíveis</strong> para usuários autorizados
-        &nbsp;·&nbsp; <em>{len(TIER2_COLS)} campos restritos</em>
-        <br><small>(endereço, contato, informações pessoais, observações internas…)</small>
-      </div>
-    </div>
-    """
+    html += "</div>"   # close card
 
     st.markdown(html, unsafe_allow_html=True)
 
@@ -795,8 +842,17 @@ def render_record(row: pd.Series, query: str = "", numero_query: str = "") -> No
 
     btn_cols = st.columns(2)
     with btn_cols[0]:
-        if st.button("✏️ Editar CID", key=f"cid_{row_idx}", use_container_width=True):
-            edit_cid_dialog(row_idx, nome, cid)
+        if st.button("✏️ Editar Dados", key=f"cid_{row_idx}", use_container_width=True):
+            edit_dados_dialog(row_idx, nome, {
+                "TIPO":               tipo,
+                "STATUS":             status,
+                "CID 2026":           cid,
+                "RESERVA 1":          reserva1,
+                "CPF RESERVA 1":      cpf_reserva1,
+                "RESERVA 2":          reserva2,
+                "CPF RESERVA 2":      cpf_reserva2,
+                "ALERTA PARA A MESA": alerta,
+            })
     with btn_cols[1]:
         if cur_month:
             if month_ok:
