@@ -538,19 +538,37 @@ def save_cell_to_drive(row_idx: int, col_name: str, value: str) -> str | None:
 # ──────────────────────────────────────────────────────────────
 EXTRAS_SHEET   = "Sheet2"
 EXTRAS_HEADERS = ["NÚMERO", "NOME", "CPF", "TELEFONE", "MOTIVO"]
+EXTRAS_DONE_COL    = 6          # column F
+EXTRAS_DONE_HEADER = "ENTREGUE"
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def load_extras(url: str) -> pd.DataFrame:
     """Read the Cestas Extras sheet. Returns an empty frame if absent/unreadable."""
     try:
         content = _fetch_gdrive(url)
         extras = pd.read_excel(
             BytesIO(content), sheet_name=EXTRAS_SHEET, dtype=str
-        )
-        return extras.fillna("")
+        ).fillna("")
+
+        # Normalise the delivered column (F). It may be missing entirely, or
+        # present without a header, in which case pandas names it "Unnamed: 5".
+        if EXTRAS_DONE_HEADER not in extras.columns:
+            if len(extras.columns) >= EXTRAS_DONE_COL:
+                extras = extras.rename(
+                    columns={extras.columns[EXTRAS_DONE_COL - 1]: EXTRAS_DONE_HEADER}
+                )
+            else:
+                extras[EXTRAS_DONE_HEADER] = ""
+
+        # Drop rows with no NÚMERO and no NOME (blank spacer rows)
+        if "NÚMERO" in extras.columns and "NOME" in extras.columns:
+            keep = (extras["NÚMERO"].str.strip() != "") | (extras["NOME"].str.strip() != "")
+            extras = extras[keep]
+
+        return extras.reset_index(drop=True)
     except Exception:
-        return pd.DataFrame(columns=EXTRAS_HEADERS)
+        return pd.DataFrame(columns=EXTRAS_HEADERS + [EXTRAS_DONE_HEADER])
 
 
 def next_extra_numero(extras: pd.DataFrame) -> int:
@@ -626,6 +644,69 @@ def save_extra_to_drive(record: dict[str, str]) -> str | None:
         return str(exc)
 
 
+def save_extra_delivered(numero: str) -> str | None:
+    """
+    Mark a Cesta Extra as delivered by writing "OK" to column F of Sheet2.
+    The row is located by matching NÚMERO in column A rather than by position,
+    so blank or reordered rows cannot cause the wrong record to be flagged.
+    Returns None on success, or an error string on failure.
+    """
+    try:
+        from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+        import openpyxl
+
+        file_id = st.secrets["GDRIVE_FILE_ID"]
+        service = _get_drive_service()
+
+        req = service.files().get_media(fileId=file_id)
+        dl_buf = BytesIO()
+        downloader = MediaIoBaseDownload(dl_buf, req)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        dl_buf.seek(0)
+
+        wb = openpyxl.load_workbook(dl_buf)
+        if EXTRAS_SHEET not in wb.sheetnames:
+            return f"Aba {EXTRAS_SHEET} não encontrada."
+        ws = wb[EXTRAS_SHEET]
+
+        # Ensure column F has a header
+        if not ws.cell(row=1, column=EXTRAS_DONE_COL).value:
+            ws.cell(row=1, column=EXTRAS_DONE_COL, value=EXTRAS_DONE_HEADER)
+
+        target = None
+        for r in range(2, ws.max_row + 1):
+            val = ws.cell(row=r, column=1).value
+            if val is not None and str(val).strip() == str(numero).strip():
+                target = r
+                break
+        if target is None:
+            return f"Registro Nº {numero} não encontrado na aba {EXTRAS_SHEET}."
+
+        ws.cell(row=target, column=EXTRAS_DONE_COL, value="OK")
+
+        up_buf = BytesIO()
+        wb.save(up_buf)
+        up_buf.seek(0)
+        media = MediaIoBaseUpload(
+            up_buf,
+            mimetype=(
+                "application/vnd.openxmlformats-officedocument"
+                ".spreadsheetml.sheet"
+            ),
+            resumable=False,
+        )
+        service.files().update(fileId=file_id, media_body=media).execute()
+
+        load_data.clear()
+        load_extras.clear()
+        return None
+
+    except Exception as exc:
+        return str(exc)
+
+
 # ──────────────────────────────────────────────────────────────
 #  DIALOGS
 # ──────────────────────────────────────────────────────────────
@@ -648,6 +729,30 @@ def confirm_month_dialog(row_idx: int, month_col: str, nome: str, numero: str) -
             if err:
                 st.error(f"Erro ao salvar: {err}")
                 st.stop()
+        st.rerun()
+    if col2.button("❌ Cancelar", use_container_width=True):
+        st.rerun()
+
+
+@st.dialog("Confirmar entrega")
+def confirm_extra_delivery_dialog(numero: str, nome: str) -> None:
+    st.markdown(
+        f"Confirmar entrega da cesta extra:<br>"
+        f"<b>{nome}</b> &nbsp;·&nbsp; Nº {numero}",
+        unsafe_allow_html=True,
+    )
+    st.write("")
+    col1, col2 = st.columns(2)
+    if col1.button("✅ Confirmar", use_container_width=True, type="primary"):
+        if not _gdrive_write_enabled():
+            st.error("Salvamento indisponível: credenciais não configuradas.")
+            st.stop()
+        with st.spinner("Salvando no Google Drive…"):
+            err = save_extra_delivered(numero)
+        if err:
+            st.error(f"Erro ao salvar: {err}")
+            st.stop()
+        st.session_state.extra_saved = f"Cesta extra Nº {numero} marcada como entregue."
         st.rerun()
     if col2.button("❌ Cancelar", use_container_width=True):
         st.rerun()
@@ -1104,6 +1209,96 @@ def render_record(row: pd.Series, query: str = "", numero_query: str = "") -> No
 
 
 # ──────────────────────────────────────────────────────────────
+#  SCREEN — LISTA DE CESTAS EXTRAS
+# ──────────────────────────────────────────────────────────────
+def _render_extras_list() -> None:
+    """Body of the Cestas Extras screen. Re-runs on its own every 60s."""
+    extras = load_extras(GITHUB_RAW_URL)
+
+    st.caption(
+        f"Atualizado às {datetime.now().strftime('%H:%M:%S')} · "
+        "atualização automática a cada minuto"
+    )
+
+    if extras.empty:
+        st.markdown(
+            """
+<div class="empty-state">
+  <div class="icon">🧺</div>
+  <p>Nenhuma cesta extra registrada ainda.</p>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+        return
+
+    total     = len(extras)
+    entregues = (
+        extras[EXTRAS_DONE_HEADER].str.strip().str.lower() == "ok"
+    ).sum()
+    st.markdown(
+        f'<div class="result-count">{total} cesta(s) extra(s) · '
+        f'{entregues} entregue(s) · {total - entregues} pendente(s)</div>',
+        unsafe_allow_html=True,
+    )
+
+    for i, row in extras.iterrows():
+        numero = str(row.get("NÚMERO", "")).strip()
+        nome   = str(row.get("NOME", "")).strip()
+        cpf    = str(row.get("CPF", "")).strip()
+        tel    = str(row.get("TELEFONE", "")).strip()
+        motivo = str(row.get("MOTIVO", "")).strip()
+        done   = str(row.get(EXTRAS_DONE_HEADER, "")).strip().lower() == "ok"
+
+        badge = (
+            '<span class="badge b-ativo">ENTREGUE</span>' if done
+            else '<span class="badge b-inativo">PENDENTE</span>'
+        )
+
+        html = f"""
+        <div class="card">
+          <div class="card-name">{nome or "—"}</div>
+          <div class="card-num">Nº {numero or "—"}
+            &nbsp;·&nbsp; CPF {cpf or "—"}
+            &nbsp;·&nbsp; Tel {tel or "—"}</div>
+          <div class="info-grid">
+            <div class="info-row">
+              <span class="info-label">Situação</span>
+              <span class="info-value">{badge}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Motivo</span>
+              <span class="info-value">{motivo or '<span class="info-empty">—</span>'}</span>
+            </div>
+          </div>
+        </div>
+        """
+        st.markdown(html, unsafe_allow_html=True)
+
+        if done:
+            st.button(
+                "✅ Entregue",
+                key=f"extra_done_{i}_{numero}",
+                use_container_width=True,
+                disabled=True,
+            )
+        else:
+            if st.button(
+                "📦 Marcar como entregue",
+                key=f"extra_done_{i}_{numero}",
+                use_container_width=True,
+            ):
+                confirm_extra_delivery_dialog(numero, nome)
+
+
+# Auto-refresh every 60s where supported, otherwise render normally.
+try:
+    render_extras_list = st.fragment(run_every="60s")(_render_extras_list)
+except Exception:
+    render_extras_list = _render_extras_list
+
+
+# ──────────────────────────────────────────────────────────────
 #  UI — HEADER
 # ──────────────────────────────────────────────────────────────
 st.markdown(
@@ -1143,6 +1338,30 @@ ou crie o arquivo `secrets.toml` com a chave `GITHUB_RAW_URL`.
     if load_error:
         with st.expander("Detalhes do erro"):
             st.code(load_error)
+    st.stop()
+
+# ──────────────────────────────────────────────────────────────
+#  SCREEN ROUTING — Cestas Extras (admin only)
+# ──────────────────────────────────────────────────────────────
+if "view" not in st.session_state:
+    st.session_state.view = "main"
+
+# Losing admin must never leave the user stranded on a restricted screen
+if st.session_state.view == "extras" and not st.session_state.get("is_admin", False):
+    st.session_state.view = "main"
+
+if st.session_state.view == "extras":
+    back, _sp = st.columns([1, 2])
+    if back.button("← Voltar", key="extras_back", use_container_width=True):
+        st.session_state.view = "main"
+        st.rerun()
+
+    if st.session_state.get("extra_saved"):
+        st.success(f"✅ {st.session_state.pop('extra_saved')}")
+
+    st.markdown('<div class="sec-title">🧺 Lista de Cestas Extras</div>',
+                unsafe_allow_html=True)
+    render_extras_list()
     st.stop()
 
 # ──────────────────────────────────────────────────────────────
@@ -1237,10 +1456,15 @@ if st.session_state.get("is_admin", False):
     if st.session_state.get("extra_saved"):
         st.success(f"✅ {st.session_state.pop('extra_saved')}")
 
-    if st.button("🧺 Dar Cesta Extra", key="btn_cesta_extra",
-                 use_container_width=True, type="primary"):
+    ecol1, ecol2 = st.columns(2)
+    if ecol1.button("🧺 Dar Cesta Extra", key="btn_cesta_extra",
+                    use_container_width=True, type="primary"):
         extras = load_extras(GITHUB_RAW_URL)
         cesta_extra_dialog(next_extra_numero(extras))
+    if ecol2.button("📋 Lista de Cestas Extras", key="btn_lista_extras",
+                    use_container_width=True):
+        st.session_state.view = "extras"
+        st.rerun()
 
     fcol1, fcol2 = st.columns([3, 2])
     fcol1.markdown(
