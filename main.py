@@ -94,6 +94,7 @@ st.markdown(
     .info-alert-row { background: #3e2e10 !important; }
     .info-alerta-row { background: #3e1010 !important; }
     .m-no { background: #2a352a !important; }
+    .m-gap { background: #5a1a1a !important; border-color: #ef5350 !important; color: #ff8a80 !important; }
   }
 
   /* ── Result card ── */
@@ -210,6 +211,20 @@ st.markdown(
     border-radius: 6px;
     min-height: 22px;
     padding: 3px 2px;
+  }
+  .m-gap {
+    background: #ffcdd2;
+    border: 1px solid #e53935;
+    border-radius: 6px;
+    min-height: 22px;
+    padding: 2px 1px;
+    text-align: center;
+    font-size: 0.68rem;
+    color: #b71c1c;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    box-sizing: border-box;
   }
 
   /* ── Search highlight ── */
@@ -447,6 +462,67 @@ def current_month_col() -> str | None:
     now = datetime.now()
     col = f"{_MONTHS_PT[now.month - 1]}/{str(now.year)[-2:]}"
     return col if col in MONTH_COLS else None
+
+
+# ──────────────────────────────────────────────────────────────
+#  DELIVERY-GAP ANALYSIS
+# ──────────────────────────────────────────────────────────────
+GAP_MIN_MONTHS_SINCE_FIRST = 3      # only analyse once this many months have passed since the first OK
+GAP_CONSECUTIVE            = 2      # this many missing months in a row trigger the alert...
+GAP_TOTAL                  = 3      # ...or this many missing months in total
+GAP_COUNT_CURRENT_MONTH    = False  # the month in progress is not yet counted as missing
+MSG_MESA                   = "Dirigir-se à mesa de cadastro"
+
+
+def _month_ordinal(col: str) -> int | None:
+    """'Mai/26' → absolute month number, so months compare across years."""
+    try:
+        mon, yy = col.split("/")
+        return (2000 + int(yy)) * 12 + _MONTHS_PT.index(mon)
+    except (ValueError, IndexError):
+        return None
+
+
+def analyze_gaps(row: pd.Series) -> set[str]:
+    """
+    Return the month columns to flag as delivery gaps (empty set = no problem).
+
+    Looks only at months AFTER the first OK, and only once at least
+    GAP_MIN_MONTHS_SINCE_FIRST months have passed since that first OK.
+    Triggered by GAP_CONSECUTIVE missing months in a row or GAP_TOTAL missing
+    in total. If the total rule fires, every missing month is flagged;
+    otherwise only the consecutive run(s) are.
+    """
+    ords = {c: _month_ordinal(c) for c in MONTH_COLS}
+    valid = sorted((c for c in MONTH_COLS if ords[c] is not None), key=ords.get)
+
+    ok_ords = [ords[c] for c in valid if cell(row, c).lower() == "ok"]
+    if not ok_ords:
+        return set()
+
+    now = datetime.now()
+    current = now.year * 12 + now.month - 1
+    first = min(ok_ords)
+    if current - first < GAP_MIN_MONTHS_SINCE_FIRST:
+        return set()
+
+    last = current if GAP_COUNT_CURRENT_MONTH else current - 1
+    window = [c for c in valid if first < ords[c] <= last]
+    missing = [c for c in window if cell(row, c).lower() != "ok"]
+
+    if len(missing) >= GAP_TOTAL:
+        return set(missing)
+
+    flagged: set[str] = set()
+    run: list[str] = []
+    for c in window + [None]:               # sentinel flushes the final run
+        if c is not None and c in missing:
+            run.append(c)
+        else:
+            if len(run) >= GAP_CONSECUTIVE:
+                flagged.update(run)
+            run = []
+    return flagged
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1069,7 +1145,13 @@ def render_record(row: pd.Series, query: str = "", numero_query: str = "") -> No
     reserva2     = cell(row, "RESERVA 2")
     cpf_reserva2 = cell(row, "CPF RESERVA 2")
 
-    status_cls = "b-ativo" if status.lower() == "ativo" else "b-inativo"
+    # ── Delivery gaps → derived status. A filled STATUS always prevails;
+    #    `status` stays the raw sheet value (used by the edit dialog).
+    gap_cols     = analyze_gaps(row)
+    status_shown = status or ("Inativo" if gap_cols else "")
+    is_inativo   = status_shown.strip().lower() == "inativo"
+
+    status_cls = "b-ativo" if status_shown.lower() == "ativo" else "b-inativo"
 
     # ── Header: name + number + CPF
     # NUMERO highlights via numero_query (NUMERO-bar search) or general query
@@ -1090,7 +1172,7 @@ def render_record(row: pd.Series, query: str = "", numero_query: str = "") -> No
       </div>
       <div class="info-row">
         <span class="info-label">Status</span>
-        <span class="info-value"><span class="badge {status_cls}">{status or "—"}</span></span>
+        <span class="info-value"><span class="badge {status_cls}">{status_shown or "—"}</span></span>
       </div>
       <div class="info-row">
         <span class="info-label">CID 2026</span>
@@ -1120,12 +1202,18 @@ def render_record(row: pd.Series, query: str = "", numero_query: str = "") -> No
     html += reserva_row("Reserva 2",   reserva2)
     html += reserva_row("CPF Res. 2",  cpf_reserva2, is_cpf=True)
 
-    # ── Alert row — always visible
-    if alerta and alerta not in ("0",):
+    # ── Alert row — always visible. Inativo adds the "mesa de cadastro" message
+    #    (unless the sheet's alert text already says it).
+    alerta_txt  = alerta if alerta not in ("", "0") else ""
+    alerta_html = highlight(alerta_txt, q) if alerta_txt else ""
+    if is_inativo and MSG_MESA.lower() not in alerta_txt.lower():
+        alerta_html += ("<br>" if alerta_html else "") + MSG_MESA
+
+    if alerta_html:
         html += f"""
       <div class="info-row info-alerta-row">
         <span class="info-label">⚠️ Alerta</span>
-        <span class="info-value info-alerta-val">{highlight(alerta, q)}</span>
+        <span class="info-value info-alerta-val">{alerta_html}</span>
       </div>
         """
     else:
@@ -1158,6 +1246,8 @@ def render_record(row: pd.Series, query: str = "", numero_query: str = "") -> No
         val = cell(row, mc)
         if val.lower() == "ok":
             html += f'<div class="m-ok" title="{mc}">✓ {mc}</div>'
+        elif mc in gap_cols:
+            html += f'<div class="m-gap" title="{mc} — sem entrega">{mc}</div>'
         else:
             html += f'<div class="m-no" title="{mc}"></div>'
     html += "</div>"
