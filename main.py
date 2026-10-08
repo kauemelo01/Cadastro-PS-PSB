@@ -836,7 +836,8 @@ def save_extra_delivered(numero: str) -> str | None:
 @st.dialog("Cadastrar Criança")
 def cadastrar_crianca_dialog(row_idx: int, nome: str, numero: str) -> None:
     st.markdown(f"Cadastro de **{nome}**")
-    prefix = f"crianca_{row_idx}"
+    form_version = st.session_state.get("crianca_form_version", 0)
+    prefix = f"crianca_{row_idx}_{form_version}"
     st.text_input("NÚMERO", value=numero, disabled=True, key=f"{prefix}_numero")
     child_name = st.text_input("NOME", key=f"{prefix}_nome")
     child_sex = st.selectbox(
@@ -1392,6 +1393,10 @@ def render_record(row: pd.Series, query: str = "", numero_query: str = "") -> No
             key=f"cadastrar_crianca_{row_idx}",
             use_container_width=True,
         ):
+            # Fresh widget keys on opening; retain them during dialog reruns.
+            st.session_state.crianca_form_version = (
+                st.session_state.get("crianca_form_version", 0) + 1
+            )
             cadastrar_crianca_dialog(row_idx, nome, numero)
 
 
