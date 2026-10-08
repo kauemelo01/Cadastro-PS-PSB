@@ -534,6 +534,129 @@ def save_cell_to_drive(row_idx: int, col_name: str, value: str) -> str | None:
 
 
 # ──────────────────────────────────────────────────────────────
+#  CRIANÇAS — JSON in column Z (Tier 2)
+# ──────────────────────────────────────────────────────────────
+CHILDREN_XLSX_COL = 26
+EXCEL_CELL_MAX_CHARS = 32767
+
+
+def append_crianca_json(existing: object, record: dict) -> str:
+    """Append a child without discarding any previously stored JSON data."""
+    if existing is None or (isinstance(existing, str) and not existing.strip()):
+        payload = {"criancas": []}
+    else:
+        try:
+            payload = json.loads(existing)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "A coluna Z já contém um valor que não é um JSON válido. "
+                "O conteúdo anterior foi preservado; corrija-o antes de salvar."
+            ) from exc
+
+    if isinstance(payload, list):
+        # Preserve legacy JSON arrays in their original format.
+        payload.append(record)
+    elif isinstance(payload, dict):
+        if "criancas" not in payload:
+            payload["criancas"] = []
+        if not isinstance(payload["criancas"], list):
+            raise ValueError(
+                "O campo 'criancas' do JSON existente deve ser uma lista. "
+                "O conteúdo anterior foi preservado."
+            )
+        payload["criancas"].append(record)
+    else:
+        # Keep valid scalar JSON values rather than replacing their contents.
+        payload = {"dados_anteriores": payload, "criancas": [record]}
+
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"),
+                         allow_nan=False)
+    # openpyxl truncates longer strings, which would corrupt the saved JSON.
+    if len(encoded) > EXCEL_CELL_MAX_CHARS:
+        raise ValueError(
+            "O JSON excederia o limite de 32.767 caracteres da célula do Excel. "
+            "Nenhum dado foi alterado."
+        )
+    return encoded
+
+
+def save_crianca_to_drive(numero: str, record: dict) -> str | None:
+    """Read the latest workbook, find the registration by number, and append in Z."""
+    if not _gdrive_write_enabled():
+        return "Credenciais do Google Drive não configuradas."
+    numero = str(numero).strip()
+    if not numero:
+        return "O cadastro não possui NÚMERO."
+
+    try:
+        from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+        import openpyxl
+
+        file_id = st.secrets["GDRIVE_FILE_ID"]
+        service = _get_drive_service()
+        req = service.files().get_media(fileId=file_id)
+        dl_buf = BytesIO()
+        downloader = MediaIoBaseDownload(dl_buf, req)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        dl_buf.seek(0)
+
+        wb = openpyxl.load_workbook(dl_buf)
+        try:
+            ws = wb.worksheets[0]
+            if str(ws.cell(row=1, column=CHILDREN_XLSX_COL).value).strip() != "Tier 2":
+                return "A coluna Z não está identificada como Tier 2."
+
+            numero_cols = [
+                c.column for c in ws[2]
+                if str(c.value).strip().upper() in ("NUMERO", "NÚMERO")
+            ]
+            if len(numero_cols) != 1:
+                return "Não foi possível identificar uma única coluna NÚMERO."
+
+            matches = []
+            for cells in ws.iter_rows(min_row=3, min_col=numero_cols[0],
+                                      max_col=numero_cols[0]):
+                value = cells[0].value
+                if isinstance(value, float) and value.is_integer():
+                    value = int(value)
+                if value is not None and str(value).strip() == numero:
+                    matches.append(cells[0].row)
+
+            if not matches:
+                return f"Cadastro Nº {numero} não encontrado no arquivo atual."
+            if len(matches) != 1:
+                return f"Há mais de um cadastro com o Nº {numero}. Nenhum dado foi alterado."
+
+            target = ws.cell(row=matches[0], column=CHILDREN_XLSX_COL)
+            # The fixed number comes from the selected registration, never the input.
+            child = dict(record)
+            child["NÚMERO"] = numero
+            target.value = append_crianca_json(target.value, child)
+
+            up_buf = BytesIO()
+            wb.save(up_buf)
+        finally:
+            wb.close()
+
+        up_buf.seek(0)
+        media = MediaIoBaseUpload(
+            up_buf,
+            mimetype=(
+                "application/vnd.openxmlformats-officedocument"
+                ".spreadsheetml.sheet"
+            ),
+            resumable=False,
+        )
+        service.files().update(fileId=file_id, media_body=media).execute()
+        load_data.clear()
+        return None
+    except Exception as exc:
+        return str(exc)
+
+
+# ──────────────────────────────────────────────────────────────
 #  CESTAS EXTRAS (Sheet2)
 # ──────────────────────────────────────────────────────────────
 EXTRAS_SHEET   = "Sheet2"
@@ -710,6 +833,63 @@ def save_extra_delivered(numero: str) -> str | None:
 # ──────────────────────────────────────────────────────────────
 #  DIALOGS
 # ──────────────────────────────────────────────────────────────
+@st.dialog("Cadastrar Criança")
+def cadastrar_crianca_dialog(row_idx: int, nome: str, numero: str) -> None:
+    st.markdown(f"Cadastro de **{nome}**")
+    prefix = f"crianca_{row_idx}"
+    st.text_input("NÚMERO", value=numero, disabled=True, key=f"{prefix}_numero")
+    child_name = st.text_input("NOME", key=f"{prefix}_nome")
+    child_sex = st.selectbox(
+        "SEXO", ["", "Feminino", "Masculino", "Não informado"],
+        key=f"{prefix}_sexo",
+    )
+    child_age = st.number_input(
+        "IDADE", min_value=0, value=None, step=1,
+        help="Idade em anos completos.", key=f"{prefix}_idade",
+    )
+
+    st.write("")
+    col1, col2 = st.columns(2)
+    save_clicked = col1.button("💾 Salvar", use_container_width=True, type="primary",
+                               key=f"{prefix}_salvar")
+    cancel_clicked = col2.button("❌ Cancelar", use_container_width=True,
+                                 key=f"{prefix}_cancelar")
+    if cancel_clicked:
+        st.rerun()
+
+    if save_clicked:
+        errors = []
+        if not numero:
+            errors.append("O cadastro não possui NÚMERO.")
+        if not child_name.strip():
+            errors.append("NOME é obrigatório.")
+        if not child_sex:
+            errors.append("SEXO é obrigatório.")
+        if child_age is None:
+            errors.append("IDADE é obrigatória.")
+        if errors:
+            for error in errors:
+                st.error(error)
+            st.stop()
+
+        record = {
+            "NÚMERO": numero,
+            "NOME": child_name.strip(),
+            "SEXO": child_sex,
+            "IDADE": int(child_age),
+        }
+        with st.spinner("Salvando no Google Drive…"):
+            err = save_crianca_to_drive(numero, record)
+        if err:
+            st.error(f"Erro ao salvar: {err}")
+            st.stop()
+
+        st.session_state.crianca_saved = (
+            f"Criança {record['NOME']} cadastrada no cadastro Nº {numero}."
+        )
+        st.rerun()
+
+
 @st.dialog("Confirmar entrega")
 def confirm_month_dialog(row_idx: int, month_col: str, nome: str, numero: str) -> None:
     st.markdown(
@@ -1170,7 +1350,7 @@ def render_record(row: pd.Series, query: str = "", numero_query: str = "") -> No
     cur_month = current_month_col()
     month_ok  = cur_month and cell(row, cur_month).lower() == "ok"
 
-    btn_cols = st.columns(2)
+    btn_cols = st.columns(3)
     with btn_cols[0]:
         is_admin = st.session_state.get("is_admin", False)
         if st.button(
@@ -1206,6 +1386,13 @@ def render_record(row: pd.Series, query: str = "", numero_query: str = "") -> No
                     use_container_width=True,
                 ):
                     confirm_month_dialog(row_idx, cur_month, nome, numero)
+    with btn_cols[2]:
+        if st.button(
+            "👶 Cadastrar Criança",
+            key=f"cadastrar_crianca_{row_idx}",
+            use_container_width=True,
+        ):
+            cadastrar_crianca_dialog(row_idx, nome, numero)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1367,6 +1554,9 @@ if st.session_state.view == "extras":
 # ──────────────────────────────────────────────────────────────
 #  UI — SEARCH
 # ──────────────────────────────────────────────────────────────
+if st.session_state.get("crianca_saved"):
+    st.success(f"✅ {st.session_state.pop('crianca_saved')}")
+
 query_num = st.text_input(
     "Buscar por Número",
     placeholder="🔢  Número do registro…",
