@@ -848,6 +848,9 @@ def cadastrar_crianca_dialog(row_idx: int, nome: str, numero: str) -> None:
         "IDADE", min_value=0, value=None, step=1,
         help="Idade em anos completos.", key=f"{prefix}_idade",
     )
+    child_obs = st.text_area(
+        "OBS. (opcional)", height=90, key=f"{prefix}_obs",
+    )
 
     st.write("")
     col1, col2 = st.columns(2)
@@ -878,6 +881,7 @@ def cadastrar_crianca_dialog(row_idx: int, nome: str, numero: str) -> None:
             "NOME": child_name.strip(),
             "SEXO": child_sex,
             "IDADE": int(child_age),
+            "OBS": child_obs.strip(),
         }
         with st.spinner("Salvando no Google Drive…"):
             err = save_crianca_to_drive(numero, record)
