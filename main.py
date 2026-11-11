@@ -1,6 +1,6 @@
 """
 Pastoral Social — Cadastro de Visitas
-Mobile-first Streamlit app: busca por Número / Nome / CPF e edição completa do cadastro.
+Aplicativo Streamlit com consulta, edição offline no aparelho e sincronização em lote.
 
 Planilha: Visita_2026.xlsx (aba "CADASTRO GERAL")
   • Linha 1: numeração das colunas      • Linha 2: cabeçalhos      • Dados a partir da linha 3
@@ -12,11 +12,14 @@ Secrets (Streamlit Cloud → Settings → Secrets):
   GDRIVE_SA_CREDENTIALS  = "<json da service account>"       (habilita salvar no Drive)
 """
 
-import html as _html
 import json
 import re as _re
-import unicodedata as _ud
-import uuid
+import hashlib
+from pathlib import Path
+
+import streamlit.components.v1 as components
+
+from offline_sync import SYNC_LOCK, apply_batch, validate_operations
 from datetime import date, datetime, time, timedelta, timezone
 from io import BytesIO
 
@@ -48,8 +51,6 @@ AUDIT_NAME_POS = 51
 AUDIT_TS_POS = 52
 AUDIT_TS_FORMAT = "dd/mm/yyyy hh:mm:ss"
 
-CPF_COLS = {"CPF", "CPF RESERVA 1", "CPF RESERVA 2"}
-
 # ──────────────────────────────────────────────────────────────
 #  PAGE CONFIG
 # ──────────────────────────────────────────────────────────────
@@ -61,118 +62,17 @@ st.set_page_config(
 )
 
 # ──────────────────────────────────────────────────────────────
-#  MOBILE-FIRST CSS
+#  LAYOUT DA PÁGINA (a interface offline tem seus próprios estilos)
 # ──────────────────────────────────────────────────────────────
 st.markdown(
-    """
-<style>
-  .main .block-container { padding: 0.75rem 0.75rem 2rem; max-width: 500px; margin: auto; }
-
-  /* Header */
-  .ps-header {
-    background: linear-gradient(135deg, #1b5e20 0%, #388e3c 100%);
-    border-radius: 14px; padding: 1rem 1.25rem 0.75rem; color: #fff; margin-bottom: 1rem;
-  }
-  .ps-header h1 { margin: 0; font-size: 1.35rem; color: #fff; }
-  .ps-header p  { margin: 0.15rem 0 0; font-size: 0.82rem; opacity: 0.85; }
-
-  /* Search box */
-  .stTextInput > div > div > input {
-    font-size: 16px !important; border-radius: 12px !important;
-    border: 2px solid #c8e6c9 !important; padding: 0.65rem 1rem !important;
-    background: #f9fbe7 !important; color: #212121 !important;
-  }
-  .stTextInput > div > div > input:focus {
-    border-color: #388e3c !important; box-shadow: 0 0 0 3px rgba(56,142,60,.15) !important;
-  }
-
-  /* Result card */
-  .card {
-    background: #fff; border-radius: 14px; padding: 1rem 1.1rem; margin-bottom: 0.5rem;
-    box-shadow: 0 2px 10px rgba(0,0,0,.08); border-left: 5px solid #388e3c;
-  }
-  .card-name { font-size: 1.05rem; font-weight: 700; color: #1b5e20; margin-bottom: 5px; }
-  .card-num  { font-size: 0.78rem; color: #757575; margin-bottom: 8px; }
-  .card-audit { font-size: 0.72rem; color: #9e9e9e; margin-top: 10px; }
-
-  /* Badges */
-  .badge { display: inline-block; padding: 3px 11px; border-radius: 20px;
-           font-size: 0.77rem; font-weight: 700; margin: 2px 3px 2px 0; }
-  .b-tipo   { background: #e3f2fd; color: #1565c0; }
-  .b-need   { background: #fff3e0; color: #e65100; }
-  .b-need2  { background: #ffebee; color: #b71c1c; }
-  .b-noneed { background: #eeeeee; color: #616161; }
-
-  /* Info rows */
-  .info-grid { margin-top: 10px; border-top: 1px solid #f0f0f0; padding-top: 8px; }
-  .info-row  { display: flex; align-items: flex-start; padding: 5px 0;
-               border-bottom: 1px solid #f9f9f9; gap: 8px; }
-  .info-label { font-size: 0.75rem; font-weight: 700; text-transform: uppercase;
-                letter-spacing: 0.03em; color: #9e9e9e; min-width: 80px; flex-shrink: 0; padding-top: 3px; }
-  .info-value { font-size: 0.9rem; color: #212121; flex: 1; word-break: break-word; }
-  .info-empty { color: #bdbdbd; font-style: italic; }
-
-  mark.hl { background: #fff176; color: #212121; border-radius: 3px; padding: 0 2px; font-weight: 700; }
-
-  .empty-state { text-align: center; padding: 3rem 1rem; color: #9e9e9e; }
-  .empty-state .icon { font-size: 2.8rem; }
-  .empty-state p { margin: 0.5rem 0 0; font-size: 0.95rem; }
-  .result-count { font-size: 0.82rem; color: #757575; margin-bottom: 0.6rem; padding-left: 2px; }
-
-  /* ── Popup de edição ── */
-  div[data-testid="stDialog"] div[role="dialog"] { max-width: 640px; }
-  div[data-testid="stDialog"] details summary p { font-weight: 700; font-size: 1.02rem; }
-  div[data-testid="stDialog"] input, div[data-testid="stDialog"] textarea { font-size: 16px !important; }
-  div[data-testid="stDialog"] [data-testid="stButtonGroup"] button { min-height: 2.6rem; font-weight: 700; }
-
-  /* Destaque: precisa receber cestas? */
-  .st-key-cestas_box {
-    background: #fff8e1; border: 2px solid #f9a825; border-radius: 14px; padding: 0.9rem 1rem 0.6rem;
-  }
-  .cestas-title { font-size: 0.8rem; font-weight: 800; letter-spacing: .04em; color: #e65100; margin-bottom: 4px; }
-  .st-key-cestas_box [role="radiogroup"] { gap: 0.45rem; width: 100%; }
-  .st-key-cestas_box [role="radiogroup"] label {
-    width: 100%; box-sizing: border-box; background: #fff; border: 2px solid #f9a825;
-    border-radius: 12px; padding: 0.7rem 0.9rem; margin: 0;
-  }
-  .st-key-cestas_box [role="radiogroup"] label p { font-weight: 800; font-size: 1.02rem; }
-
-  /* Popup de confirmação */
-  .chg-list { max-height: 38vh; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 10px; padding: 4px 10px; }
-  .chg-item { padding: 7px 0; border-bottom: 1px solid #f0f0f0; font-size: 0.85rem; }
-  .chg-item:last-child { border-bottom: none; }
-  .chg-label { font-weight: 700; color: #1b5e20; font-size: 0.78rem; text-transform: uppercase; letter-spacing: .03em; }
-  .chg-old { color: #b71c1c; text-decoration: line-through; word-break: break-word; }
-  .chg-new { color: #2e7d32; font-weight: 600; word-break: break-word; }
-
-  /* Dark mode */
-  @media (prefers-color-scheme: dark) {
-    .stTextInput > div > div > input { background: #1a2e1a !important; color: #e8f5e9 !important; border-color: #4caf50 !important; }
-    .stTextInput > div > div > input::placeholder { color: #81c784 !important; opacity: 0.7; }
-    .card { background: #1e2b1e !important; }
-    .info-value { color: #e0e0e0 !important; }
-    .card-name { color: #a5d6a7 !important; }
-    .card-num, .card-audit { color: #9e9e9e !important; }
-    .info-grid { border-top-color: #2e3e2e !important; }
-    .info-row  { border-bottom-color: #2a3a2a !important; }
-    .st-key-cestas_box { background: #3e2e10 !important; border-color: #f9a825 !important; }
-    .cestas-title { color: #ffcc80 !important; }
-    .st-key-cestas_box [role="radiogroup"] label { background: #2a2110 !important; }
-    .chg-list, .chg-item { border-color: #2e3e2e !important; }
-    .chg-label { color: #a5d6a7 !important; }
-    .chg-old { color: #ef9a9a !important; }
-    .chg-new { color: #a5d6a7 !important; }
-    .b-noneed { background: #2a352a !important; color: #bdbdbd !important; }
-  }
-
-  #MainMenu { visibility: hidden; }
-  footer    { visibility: hidden; }
-  header    { visibility: hidden; }
-</style>
-""",
-    unsafe_allow_html=True,
+    """<style>
+    .main .block-container, .stMainBlockContainer { padding: 1rem .75rem 2rem; max-width: 540px; }
+    .ps-header { background: linear-gradient(135deg,#1b5e20,#388e3c); border-radius: 14px;
+                 padding: 1rem 1.25rem; color: white; margin-bottom: 1rem; }
+    .ps-header h1 { font-size: 1.35rem; color: white; margin: 0; padding: 0; }
+    .ps-header p { font-size: .82rem; margin: .25rem 0 0; opacity: .85; }
+    </style>""", unsafe_allow_html=True,
 )
-
 
 # ──────────────────────────────────────────────────────────────
 #  NORMALIZAÇÃO DE VALORES
@@ -220,16 +120,6 @@ def parse_br_date(s: str) -> date | None:
     except ValueError:
         return None
     return d if date(1900, 1, 1) <= d <= date.today() else None
-
-
-def format_cpf_if_plain(text: str) -> str:
-    """'12345678901' ou '123.456.789-01' → '123.456.789-01'. Outros formatos ficam como digitados."""
-    m = _re.fullmatch(r"(\d{3})\.?(\d{3})\.?(\d{3})-?(\d{2})", text.strip())
-    return f"{m.group(1)}.{m.group(2)}.{m.group(3)}-{m.group(4)}" if m else text
-
-
-def md_esc(s: str) -> str:
-    return _re.sub(r"([\\`*_{}\[\]()#+!|~$<>])", r"\\\1", s)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -383,13 +273,17 @@ def _fetch_gdrive(url: str) -> bytes:
 def load_data(url: str):
     """Retorna (df, erro). df: todas as colunas como texto; 52 colunas (50 da planilha + 2 de auditoria)."""
     try:
-        content = _fetch_gdrive(url)
-        raw = pd.read_excel(BytesIO(content), header=None, dtype=str)
+        content = (_download_drive(_get_drive_service(), st.secrets["GDRIVE_FILE_ID"])
+                   if _gdrive_write_enabled() else _fetch_gdrive(url))
+        return read_workbook(content), None
     except Exception as exc:
         return None, str(exc)
 
+
+def read_workbook(content):
+    raw = pd.read_excel(BytesIO(content), header=None, dtype=str)
     if raw.shape[0] < 3:
-        return None, "Arquivo sem dados suficientes."
+        raise ValueError("Arquivo sem dados suficientes.")
 
     # Garante 52 colunas (as de auditoria podem não existir ainda)
     while raw.shape[1] < AUDIT_TS_POS:
@@ -410,46 +304,9 @@ def load_data(url: str):
     df = df.apply(lambda s: s.map(norm_cell)).reset_index(drop=True)
     # remove linhas totalmente vazias
     df = df[~(df.drop(columns=[AUDIT_NAME_COL, AUDIT_TS_COL]).eq("").all(axis=1))].copy()
-    return df, None
+    return df
 
 
-with st.spinner("Carregando cadastro…"):
-    _base_df, load_error = load_data(GITHUB_RAW_URL)
-
-# ──────────────────────────────────────────────────────────────
-#  SESSÃO: edições em memória (cobre o intervalo até o arquivo atualizar)
-# ──────────────────────────────────────────────────────────────
-if "edits" not in st.session_state:
-    st.session_state.edits = {}  # {numero_original: {coluna: novo_texto}}
-
-
-def with_overlay(base: pd.DataFrame) -> pd.DataFrame:
-    """Aplica as edições feitas nesta sessão. Descarta as que o arquivo já reflete."""
-    edits = st.session_state.edits
-    if not edits or base is None:
-        return base
-    out = base.copy()
-    pos = {v: i for i, v in out["NUMERO"].items()}
-    for numero in list(edits):
-        i = pos.get(numero)
-        if i is None:
-            del edits[numero]
-            continue
-        for col in list(edits[numero]):
-            if col not in out.columns or out.at[i, col] == edits[numero][col]:
-                del edits[numero][col]
-            else:
-                out.at[i, col] = edits[numero][col]
-        if not edits[numero]:
-            del edits[numero]
-    return out
-
-
-df = with_overlay(_base_df)
-
-# ──────────────────────────────────────────────────────────────
-#  GOOGLE DRIVE — GRAVAÇÃO
-# ──────────────────────────────────────────────────────────────
 def _gdrive_write_enabled() -> bool:
     try:
         return "GDRIVE_FILE_ID" in st.secrets and "GDRIVE_SA_CREDENTIALS" in st.secrets
@@ -461,11 +318,19 @@ def _get_drive_service():
     from google.oauth2.service_account import Credentials
     from googleapiclient.discovery import build
 
-    creds_info = json.loads(st.secrets["GDRIVE_SA_CREDENTIALS"])
+    creds_info = st.secrets["GDRIVE_SA_CREDENTIALS"]
+    if isinstance(creds_info, str):
+        creds_info = json.loads(creds_info)
+    else:
+        creds_info = dict(creds_info)
     creds = Credentials.from_service_account_info(
         creds_info, scopes=["https://www.googleapis.com/auth/drive"]
     )
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+    import httplib2
+    from google_auth_httplib2 import AuthorizedHttp
+
+    http = AuthorizedHttp(creds, http=httplib2.Http(timeout=20))
+    return build("drive", "v3", http=http, cache_discovery=False)
 
 
 def _suffixes():
@@ -585,475 +450,90 @@ def patch_workbook(wb, numero: str, changes: dict, editor: str, ts: datetime,
     return None, novo
 
 
-def save_record_to_drive(numero: str, changes: dict, editor: str, ts: datetime,
-                         user_row: dict | None = None) -> tuple[str | None, str | None]:
-    """Baixa o xlsx do Drive, aplica as alterações e re-envia. Devolve (erro, numero_novo_se_conflito)."""
-    try:
-        import openpyxl
-        from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+def _download_drive(service, file_id):
+    from googleapiclient.http import MediaIoBaseDownload
 
-        file_id = st.secrets["GDRIVE_FILE_ID"]
+    buf = BytesIO()
+    downloader = MediaIoBaseDownload(buf, service.files().get_media(fileId=file_id))
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    return buf.getvalue()
+
+
+def save_batch_to_drive(operations):
+    """Uma leitura, todas as alterações em ordem, um único upload do XLSX."""
+    import openpyxl
+    from googleapiclient.http import MediaIoBaseUpload
+
+    with SYNC_LOCK:
         service = _get_drive_service()
-
-        buf = BytesIO()
-        downloader = MediaIoBaseDownload(buf, service.files().get_media(fileId=file_id))
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-        buf.seek(0)
-
-        wb = openpyxl.load_workbook(buf)
-        err, novo = patch_workbook(wb, numero, changes, editor, ts, user_row)
-        if err:
-            load_data.clear()
-            return err, None
-
+        file_id = st.secrets["GDRIVE_FILE_ID"]
+        wb = openpyxl.load_workbook(BytesIO(_download_drive(service, file_id)))
+        columns = {norm_header(c.value) for c in wb.active[2][:50] if c.value}
+        validated = validate_operations(operations, columns, _from_display, SP_TZ)
+        results = apply_batch(wb, validated, patch_workbook)
         out = BytesIO()
         wb.save(out)
+        content = out.getvalue()
         out.seek(0)
         media = MediaIoBaseUpload(
-            out,
-            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            out, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             resumable=False,
         )
         service.files().update(fileId=file_id, media_body=media).execute()
         load_data.clear()
-        return None, novo
-    except Exception as exc:
-        return str(exc), None
+        return results, read_workbook(content).to_dict(orient="records")
 
 
-# ──────────────────────────────────────────────────────────────
-#  FORMULÁRIO DE EDIÇÃO
-# ──────────────────────────────────────────────────────────────
-def _field_widget(col: str, spec: dict, initial: str, key: str, draft: dict):
-    """Desenha o campo. Retorna (valor_inicial_do_widget, valor_atual_do_widget, texto_novo)."""
-    kind, label = spec["kind"], spec["label"]
-    help_ = spec.get("help")
-
-    if kind == "locked":  # único campo bloqueado
-        st.text_input(label, value=initial, key=key, disabled=True, help=help_)
-        return initial, initial, initial
-
-    if kind in ("text", "id"):
-        val = st.text_input(label, value=draft.get(col, initial), key=key,
-                            placeholder=spec.get("ph"), help=help_)
-        return initial, val, val.strip()
-
-    if kind == "textarea":
-        val = st.text_area(label, value=draft.get(col, initial), key=key,
-                           height=spec.get("h", 100), help=help_)
-        return initial, val, val.strip()
-
-    if kind == "select":
-        opts = list(spec["options"])
-        if initial and initial not in opts:
-            opts.append(initial)  # preserva valores antigos fora da lista
-        w_init = initial or None
-        start = draft.get(col, w_init)
-        idx = opts.index(start) if start in opts else None
-        val = st.selectbox(label, opts, index=idx, key=key, placeholder="Selecione…")
-        return w_init, val, val or ""
-
-    if kind == "choice":  # lista vertical (cabe inteira em telas estreitas)
-        opts = list(spec["options"])
-        if initial and initial not in opts:
-            opts.append(initial)
-        w_init = initial or None
-        start = draft.get(col, w_init)
-        idx = opts.index(start) if start in opts else None
-        val = st.radio(label, opts, index=idx, key=key, label_visibility="collapsed")
-        return w_init, val, val or ""
-
-    if kind == "yesno":
-        opts = ["SIM", "NÃO"]
-        if initial and initial not in opts:
-            opts.append(initial)  # preserva valores antigos fora da lista
-        w_init = initial or None
-        start = draft.get(col, w_init)
-        st.markdown(f"<div style='font-size:.875rem;margin-bottom:2px'>{_html.escape(label)}</div>",
-                    unsafe_allow_html=True)
-        val = st.segmented_control(label, opts, selection_mode="single", default=start,
-                                   key=key, label_visibility="collapsed")
-        return w_init, val, val or ""
-
-    if kind == "date":
-        w_init = parse_br_date(initial)
-        val = st.date_input(label, value=draft.get(col, w_init), min_value=date(1900, 1, 1),
-                            max_value=date.today(), format="DD/MM/YYYY", key=key)
-        if initial and w_init is None:
-            st.caption(f"Valor atual na planilha (formato não reconhecido): **{md_esc(initial)}**")
-        return w_init, val, val.strftime("%d/%m/%Y") if val else ""
-
-    if kind == "multi":
-        toks = [t.strip() for t in _re.split(r"[,;]", initial) if t.strip()]
-        opts = list(spec["options"]) + [t for t in toks if t not in spec["options"]]
-        val = st.multiselect(label, opts, default=draft.get(col, toks), key=key,
-                             placeholder="Selecione…")
-        if spec.get("note"):
-            st.caption(spec["note"])
-        ordered = [o for o in opts if o in val]
-        return toks, val, ", ".join(ordered)
-
-    raise ValueError(kind)
-
-
-def _differs(kind: str, w_init, w_val) -> bool:
-    if kind == "multi":
-        return set(w_init or []) != set(w_val or [])
-    if kind in ("text", "id", "textarea"):
-        return (w_init or "").strip() != (w_val or "").strip()
-    return w_init != w_val
-
-
-def _cell_value(col: str, spec: dict, new_text: str, widget_val):
-    """Texto/valor do widget → valor a gravar na célula (preserva tipos numéricos e datas)."""
-    if new_text == "":
-        return None
-    if spec["kind"] == "date" and isinstance(widget_val, date):
-        return datetime.combine(widget_val, time())
-    if col in INT_IF_DIGITS and _re.fullmatch(r"\d{1,9}", new_text):
-        return int(new_text)
-    return new_text
-
-
-def _row_dict(numero: str) -> dict | None:
-    hit = df[df["NUMERO"] == numero]
-    return None if hit.empty else hit.iloc[0].to_dict()
-
-
-@st.dialog("✏️ Editar Cadastro", width="large")
-def edit_dialog(numero: str, row: dict, nonce: str, draft: dict | None = None):
-    draft = draft or {}
-    st.markdown(f"**{md_esc(row.get('NOME') or '—')}**  \nNº {md_esc(numero)}")
-    st.caption("Toque em cada tema para abrir. Só os campos que você alterar serão gravados.")
-
-    changes: dict[str, dict] = {}
-    widgets: dict[str, object] = {}
-
-    def draw(col: str):
-        if col not in row:
-            return
-        spec = FIELD_SPECS[col]
-        initial = row.get(col, "")
-        w_init, w_val, new_text = _field_widget(col, spec, initial, f"ed_{nonce}_{col}", draft)
-        widgets[col] = w_val
-        if _differs(spec["kind"], w_init, w_val):
-            if col in CPF_COLS:
-                new_text = format_cpf_if_plain(new_text)
-            changes[col] = {"old": initial, "new": new_text, "label": spec["label"],
-                            "value": _cell_value(col, spec, new_text, w_val)}
-
-    for i, (title, cols) in enumerate(SECTIONS_TOP):
-        with st.expander(title, expanded=(i == 0)):
-            for c in cols:
-                draw(c)
-
-    # Outras colunas que existam na planilha e não estejam no esquema acima
-    extras = [c for c in row if c not in FIELD_SPECS and c not in (AUDIT_NAME_COL, AUDIT_TS_COL)]
-    for c in extras:
-        FIELD_SPECS.setdefault(c, F(c.title(), "text"))
-    if extras:
-        with st.expander("📎 Outros campos"):
-            for c in extras:
-                draw(c)
-
-    # ── Destaque: avaliação de necessidade de cestas (entre os últimos campos)
-    with st.container(key="cestas_box"):
-        st.markdown("<div class='cestas-title'>⭐ AVALIAÇÃO — CESTAS BÁSICAS</div>", unsafe_allow_html=True)
-        st.markdown("**Precisa receber cestas básicas da Pastoral Social?**")
-        draw(COL_CESTAS)
-
-    with st.expander(SECTION_BOTTOM[0], expanded=False):
-        for c in SECTION_BOTTOM[1]:
-            draw(c)
-
-    st.write("")
-    n = len(changes)
-    st.caption(f"{n} campo{'s' if n != 1 else ''} alterado{'s' if n != 1 else ''}")
-    c1, c2 = st.columns(2)
-    if c1.button("💾 Salvar", type="primary", width="stretch", key=f"save_{nonce}"):
-        errors = []
-        if "NOME" in changes and not changes["NOME"]["new"]:
-            errors.append("O nome não pode ficar em branco.")
-        if not n:
-            errors.append("Nenhuma alteração para salvar.")
-        if errors:
-            for e in errors:
-                st.error(e)
-        else:
-            st.session_state.pending = {"numero": numero, "nome": row.get("NOME", ""),
-                                        "changes": changes, "widgets": widgets, "row": row}
-            st.session_state.open_dialog = "confirm"
-            st.rerun()  # fecha este popup; o de confirmação abre em seguida
-    if c2.button("Cancelar", width="stretch", key=f"cancel_{nonce}"):
-        st.session_state.pop("pending", None)
-        st.rerun()
-
-
-@st.dialog("Confirmar alterações")
-def confirm_dialog(pending: dict):
-    numero, nome, changes = pending["numero"], pending["nome"], pending["changes"]
-    n = len(changes)
-    st.markdown(f"Você alterou **{n} campo{'s' if n != 1 else ''}** de "
-                f"**{md_esc(nome or '—')}** · Nº {md_esc(numero)}:")
-
-    def short(s: str) -> str:
-        s = s if s else "(vazio)"
-        return _html.escape(s if len(s) <= 140 else s[:137] + "…").replace("\n", " ⏎ ")
-
-    items = "".join(
-        f"<div class='chg-item'><div class='chg-label'>{_html.escape(ch['label'])}</div>"
-        f"<span class='chg-old'>{short(ch['old'])}</span> → <span class='chg-new'>{short(ch['new'])}</span></div>"
-        for ch in changes.values()
-    )
-    st.markdown(f"<div class='chg-list'>{items}</div>", unsafe_allow_html=True)
-    st.write("")
-    editor = st.text_input("Seu nome (obrigatório) *", key="confirm_editor",
-                           placeholder="Quem está salvando estas alterações")
-    st.caption("Seu nome e a data/hora ficam gravados no cadastro.")
-
-    c1, c2 = st.columns(2)
-    if c1.button("✅ Confirmar e salvar", type="primary", width="stretch"):
-        editor = " ".join(editor.split())
-        if len(editor) < 2:
-            st.error("Informe seu nome para confirmar.")
-            return
-        ts = datetime.now(SP_TZ).replace(tzinfo=None, microsecond=0)
-        novo = None
-        if _gdrive_write_enabled():
-            with st.spinner("Salvando no Google Drive…"):
-                err, novo = save_record_to_drive(numero, changes, editor, ts, pending.get("row"))
-            if err:
-                st.error(f"Não foi possível salvar: {err}")
-                return
-            flash = ("info", f"✅ Cadastro Nº {numero} salvo.")
-        else:
-            flash = ("warning", f"Cadastro Nº {numero} alterado apenas nesta sessão (Drive não configurado).")
-
-        if novo:  # conflito: o original ficou intacto; as alterações foram para a nova linha (sem aviso extra)
-            pass
-        else:
-            ed = {col: ch["new"] for col, ch in changes.items()}
-            ed[AUDIT_NAME_COL] = editor
-            ed[AUDIT_TS_COL] = norm_cell(ts)
-            st.session_state.edits.setdefault(numero, {}).update(ed)
-        st.session_state.pop("pending", None)
-        st.session_state.flash = flash
-        st.rerun()
-    if c2.button("↩️ Voltar", width="stretch"):
-        st.session_state.open_dialog = "edit_back"
-        st.rerun()
-
-
-# ──────────────────────────────────────────────────────────────
-#  BUSCA
-# ──────────────────────────────────────────────────────────────
-_ACCENT_CLASS: dict[str, str] = {}
-for _base, _variants in [("a", "aàáâãäå"), ("e", "eèéêë"), ("i", "iìíîï"), ("o", "oòóôõö"),
-                         ("u", "uùúûü"), ("c", "cç"), ("n", "nñ")]:
-    _cls = f"[{_variants}]"
-    for _ch in _variants:
-        _ACCENT_CLASS[_ch] = _cls
-
-
-def _normalize(s: str) -> str:
-    return "".join(c for c in _ud.normalize("NFD", s) if _ud.category(c) != "Mn").lower()
-
-
-def _strip_cpf(s: str) -> str:
-    return s.replace(".", "").replace("-", "")
-
-
-def search_numero_exact(query: str) -> pd.DataFrame:
-    """Linha cujo NUMERO é exatamente o digitado (ignora zeros à esquerda)."""
-    q = query.strip()
-    if not q or df is None:
-        return pd.DataFrame()
-    if q.isdigit():
-        q = str(int(q))
-    return df[df["NUMERO"].str.strip() == q].copy()
-
-
-# ──────────────────────────────────────────────────────────────
-#  CARD DO REGISTRO
-# ──────────────────────────────────────────────────────────────
-def cell(row: pd.Series, col: str) -> str:
-    v = str(row.get(col, "")).strip()
-    return "" if v in ("nan", "None") else v
-
-
-def _query_to_pattern(query: str) -> str:
-    return "".join(_ACCENT_CLASS.get(ch, _re.escape(ch)) for ch in query.lower())
-
-
-def highlight(text: str, query: str) -> str:
-    """Escapa HTML e marca (sem diferenciar acentos) as ocorrências da busca."""
-    if not text:
-        return ""
-    query = (query or "").strip()
-    if not query:
-        return _html.escape(text)
-    try:
-        pat = _re.compile(_query_to_pattern(query), _re.IGNORECASE)
-    except _re.error:
-        return _html.escape(text)
-    out, last = [], 0
-    for m in pat.finditer(text):
-        if m.end() == m.start():
-            continue
-        out.append(_html.escape(text[last:m.start()]))
-        out.append(f'<mark class="hl">{_html.escape(m.group(0))}</mark>')
-        last = m.end()
-    out.append(_html.escape(text[last:]))
-    return "".join(out)
-
-
-def _row(label: str, value_html: str) -> str:
-    return (f'<div class="info-row"><span class="info-label">{label}</span>'
-            f'<span class="info-value">{value_html or "<span class=info-empty>—</span>"}</span></div>')
-
-
-def render_record(row: pd.Series, numero_query: str = "") -> None:
-    q_num = numero_query.strip()
-    nome, numero, cpf = cell(row, "NOME"), cell(row, "NUMERO"), cell(row, "CPF")
-    tipo, cid, tel = cell(row, "TIPO"), cell(row, "CID 2026"), cell(row, "TELEFONE")
-    benef = cell(row, "TIPO DE BENEFICIÁRIO [TIPO]")
-    cestas = cell(row, COL_CESTAS)
-
-    endereco = ", ".join(p for p in (cell(row, "RUA PRINCIPAL"), cell(row, "Nº CASA")) if p)
-    viela = cell(row, "VIELA")
-    if viela:
-        endereco = f"{endereco} — viela {viela}" if endereco else f"viela {viela}"
-
-    cestas_up = cestas.upper()
-    cestas_cls = ("b-need2" if cestas_up == "PRECISA MUITO"
-                  else "b-noneed" if cestas_up in ("NÃO PRECISA", "NÃO")
-                  else "b-need")
-    cestas_html = f'<span class="badge {cestas_cls}">{_html.escape(cestas)}</span>' if cestas else ""
-    tipo_html = f'<span class="badge b-tipo">{_html.escape(tipo)}</span>' if tipo else ""
-
-    numero_hl = highlight(numero, q_num)
-    h = f"""
-    <div class="card">
-      <div class="card-name">{_html.escape(nome) or "—"}</div>
-      <div class="card-num">Nº {numero_hl} &nbsp;·&nbsp; CPF {_html.escape(cpf) if cpf else "—"}</div>
-      <div class="info-grid">
-        {_row("Tipo", tipo_html)}
-        {_row("CID 2026", _html.escape(cid))}
-        {_row("Telefone", _html.escape(tel))}
-        {_row("Endereço", _html.escape(endereco))}
-        {_row("Precisa cesta", cestas_html)}
-        {_row("Benefíc.", _html.escape(benef))}
-      </div>
-    """
-    por, em = cell(row, AUDIT_NAME_COL), cell(row, AUDIT_TS_COL)
-    if por or em:
-        h += f'<div class="card-audit">Última edição: {_html.escape(por)} · {_html.escape(em)}</div>'
-    h += "</div>"
-    st.markdown(h, unsafe_allow_html=True)
-
-    # Único botão: sempre disponível
-    if st.button("✏️ Editar Cadastro", key=f"edit_{row.name}", width="stretch"):
-        edit_dialog(numero, row.to_dict(), nonce=uuid.uuid4().hex[:8])
-
-
-# ──────────────────────────────────────────────────────────────
-#  UI
-# ──────────────────────────────────────────────────────────────
-st.markdown(
-    """
-<div class="ps-header">
-  <h1>📋 Cadastro de Visitas</h1>
-  <p>Pastoral Social · Jardim Colombo</p>
-</div>
-""",
-    unsafe_allow_html=True,
+# A interface de consulta/edição executa no navegador, inclusive sem WebSocket.
+offline_app = components.declare_component(
+    "offline_visitas", path=str(Path(__file__).with_name("offline_frontend"))
 )
 
-_flash = st.session_state.pop("flash", None)
-if _flash:
-    if _flash[0] == "warning":
-        st.warning(_flash[1], icon="⚠️")
-    else:
-        st.toast(_flash[1])
-
+st.markdown(
+    "<div class='ps-header'><h1>📋 Cadastro de Visitas</h1>"
+    "<p>Pastoral Social · Jardim Colombo</p></div>", unsafe_allow_html=True,
+)
+with st.spinner("Carregando cadastro…"):
+    _base_df, load_error = load_data(GITHUB_RAW_URL)
+if load_error:
+    # Não guarda falhas por cinco minutos; a próxima tentativa deve consultar a rede.
+    load_data.clear()
+    st.warning("Sem acesso à planilha. Usando os dados guardados neste aparelho, se disponíveis.")
 if not _gdrive_write_enabled():
-    st.warning(
-        "⚠️ Salvamento no Drive desativado. Configure `GDRIVE_FILE_ID` e "
-        "`GDRIVE_SA_CREDENTIALS` nos Secrets para gravar na planilha.",
-        icon="🔒",
-    )
+    st.warning("Drive não configurado. As edições ficam pendentes neste aparelho até ser possível enviar.")
 
-if load_error or df is None:
-    st.error("❌ Não foi possível carregar o arquivo.")
-    st.markdown(
-        """
-**Possíveis causas:**
-- A URL do arquivo ainda não foi configurada (`GITHUB_RAW_URL`).
-- O arquivo não existe / é privado.
-- Problema de rede.
-"""
-    )
-    if load_error:
-        with st.expander("Detalhes do erro"):
-            st.code(load_error)
-    st.stop()
-
-query_num = st.text_input("Buscar por Número", placeholder="🔢  Número do registro…",
-                          label_visibility="collapsed", key="q_num")
-
-
-def show_results(results: pd.DataFrame, num_query: str) -> None:
-    if results.empty:
-        st.markdown(
-            """
-<div class="empty-state">
-  <div class="icon">🔎</div>
-  <p>Nenhum registro encontrado.<br>Confira o número e tente de novo.</p>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-        return
-
-    count = len(results)
-    st.markdown(
-        f'<div class="result-count">{count} registro{"s" if count > 1 else ""} '
-        f'encontrado{"s" if count > 1 else ""}</div>',
-        unsafe_allow_html=True,
-    )
-    for _, row in results.iterrows():
-        render_record(row, numero_query=num_query)
-
-
-if query_num.strip():
-    show_results(search_numero_exact(query_num), query_num)
-else:
-    st.markdown(
-        f"""
-<div class="empty-state">
-  <div class="icon">🔍</div>
-  <p>Digite o número de registro conforme o
-  <a href="https://www.google.com/maps/d/viewer?mid=10OImJnmvNDhH2FrCKoVIjK0DUt0XuVE"
-     target="_blank" rel="noopener noreferrer">Google Maps</a></p>
-  <p style="margin-top:1.5rem;font-size:0.8rem;color:#bdbdbd">{len(df)} cadastros</p>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
-# ──────────────────────────────────────────────────────────────
-#  ENCADEAMENTO DOS POPUPS (editar → confirmar → [voltar])
-#  O Streamlit não permite popup dentro de popup; por isso o primeiro fecha
-#  (st.rerun) e o segundo abre logo depois. O flag é consumido (pop) ao abrir,
-#  então fechar o popup no "X" não o reabre na próxima interação.
-# ──────────────────────────────────────────────────────────────
-_next = st.session_state.pop("open_dialog", None)
-_pending = st.session_state.get("pending")
-if _next == "confirm" and _pending:
-    confirm_dialog(_pending)
-elif _next == "edit_back" and _pending:
-    _row = _row_dict(_pending["numero"])
-    if _row:
-        edit_dialog(_pending["numero"], _row, nonce=uuid.uuid4().hex[:8], draft=_pending["widgets"])
+specs = dict(FIELD_SPECS)
+if _base_df is not None:
+    for col in _base_df.columns:
+        if col not in specs and col not in (AUDIT_NAME_COL, AUDIT_TS_COL):
+            specs[col] = F(col.title(), "text")
+source_id = GITHUB_RAW_URL
+dataset = hashlib.sha256(source_id.encode()).hexdigest()[:24]
+response = st.session_state.get("sync_response")
+event = offline_app(
+    dataset=dataset,
+    records=_base_df.to_dict(orient="records") if _base_df is not None else None,
+    specs=specs, sections=SECTIONS_TOP + [("⭐ Avaliação de cestas", [COL_CESTAS]), SECTION_BOTTOM],
+    audit_name=AUDIT_NAME_COL, audit_ts=AUDIT_TS_COL,
+    write_enabled=_gdrive_write_enabled(), response=response,
+    default=None, key="offline_visitas_main",
+)
+if isinstance(event, dict) and event.get("type") == "sync":
+    request_id = event.get("request_id")
+    if request_id and (not response or response.get("request_id") != request_id):
+        try:
+            if not _gdrive_write_enabled():
+                raise ValueError("Configure as credenciais do Drive para enviar. As pendências continuam neste aparelho.")
+            with st.spinner("Enviando todas as alterações em um único lote…"):
+                targets, records = save_batch_to_drive(event.get("operations"))
+            st.session_state.sync_response = {
+                "request_id": request_id, "ok": True, "targets": targets, "records": records,
+            }
+        except Exception as exc:
+            st.session_state.sync_response = {
+                "request_id": request_id, "ok": False,
+                "error": f"Não foi possível enviar: {exc}. As alterações continuam no cache deste aparelho.",
+            }
+        st.rerun()
