@@ -9,8 +9,10 @@ A pessoa digita o número do registro, confere o resumo do cadastro e edita todo
 ## Funcionalidades
 
 - **Busca por número do registro** (exata; ignora zeros à esquerda).
+- **Link direto de edição:** `https://cadastro-ps-psb.streamlit.app/?id=15` abre automaticamente o popup do cadastro de número 15.
+- **Mapas na tela inicial:** links para o Google Maps e para o **OpenStreetMap (offline)**, usando o arquivo HTML do próprio repositório.
 - **Card de resumo** com nome, número, CPF, tipo, CID 2026, telefone, endereço, avaliação de cestas e tipo de beneficiário.
-- **Botão único: "✏️ Editar Cadastro"**, sempre disponível. Não há login nem perfil de administrador.
+- **Botão "✏️ Editar Cadastro"**, sempre disponível em cada card. Não há login nem perfil de administrador.
 - **Popup de edição** com todos os campos da planilha, em seções que abrem e fecham com um toque (boa navegação no celular):
   - 🪪 Identificação
   - 👥 Reservas
@@ -24,6 +26,8 @@ A pessoa digita o número do registro, confere o resumo do cadastro e edita todo
 - **Segundo popup de confirmação** com a lista "antes → depois" das alterações e **nome obrigatório** de quem está salvando.
 - **Auditoria:** o nome e a data/hora (horário de Brasília) são gravados nas colunas **51** e **52** da planilha.
 - **Só o que mudou é gravado**, preservando os tipos da planilha (números, datas, textos).
+- **Cache persistente:** se o Google Drive estiver indisponível, as alterações ficam pendentes e continuam visíveis no aplicativo.
+- **Envio em lote:** quando houver pendências, a tela principal exibe **"☁️ Enviar alterações pendentes"**. Um clique envia todas de uma vez, preservando o autor e a data/hora original de cada confirmação.
 
 ### Regras dos campos
 
@@ -36,6 +40,18 @@ A pessoa digita o número do registro, confere o resumo do cadastro e edita todo
 | Campos de quantidade, estado civil, tipo etc. | Listas de opções; valores antigos fora da lista são preservados |
 | Sim/Não | Botões `SIM` / `NÃO` |
 | Nome | Não pode ficar em branco |
+
+### Abrir um cadastro por link
+
+Acrescente `?id=NUMERO` à URL do aplicativo, usando o **número do cadastro**, e não a posição da linha na planilha:
+
+- [Editar cadastro 15](https://cadastro-ps-psb.streamlit.app/?id=15)
+- [Editar cadastro 220](https://cadastro-ps-psb.streamlit.app/?id=220)
+- [Editar cadastro 220-A](https://cadastro-ps-psb.streamlit.app/?id=220-A), caso esse número com sufixo exista.
+
+O link preenche a busca e abre o mesmo popup usado pelo botão **"✏️ Editar Cadastro"**, incluindo as alterações pendentes em cache. Números sem sufixo ignoram zeros à esquerda, como na busca normal (`?id=0015` procura o cadastro 15). O popup abre uma única vez por link na sessão; fechar, cancelar, salvar ou fazer outra busca não o reabre automaticamente. Um link com outro `id` pode abrir outro cadastro. Ao abrir o link em uma nova sessão, o popup abre novamente.
+
+Se o cadastro não existir, se o parâmetro estiver vazio ou repetido, ou se houver mais de uma linha com o mesmo número, o app mostra um aviso e não abre automaticamente um cadastro ambíguo. Sem `id` na URL, a aplicação funciona como antes. O salvamento, a confirmação, a auditoria, as regras de conflito, o cache e os estilos permanecem iguais. Os links passam a funcionar após publicar esta versão de `main.py` no aplicativo.
 
 ---
 
@@ -53,7 +69,7 @@ A pessoa digita o número do registro, confere o resumo do cadastro e edita todo
 
 ## Como a gravação funciona
 
-A cada confirmação, o app baixa o `.xlsx` do Drive, altera o cadastro e envia o arquivo de volta.
+A cada confirmação, o app registra a alteração no cache local antes de tentar gravar no Drive. Sem pendências anteriores, ele baixa o `.xlsx`, altera o cadastro e envia o arquivo de volta. Após a confirmação do Drive, remove a alteração do cache.
 
 1. A linha é localizada pelo **NUMERO** (nunca pela posição na tela).
 2. Os campos alterados são gravados; o nome e o timestamp vão para as colunas 51 e 52.
@@ -61,9 +77,17 @@ A cada confirmação, o app baixa o `.xlsx` do Drive, altera o cadastro e envia 
    - Alterações de outra pessoa em campos que o usuário **não** editou não geram conflito.
    - Os cadastros duplicados gerados por conflito precisam ser mesclados ou apagados manualmente na planilha.
 
+### Cache e envio das pendências
+
+1. Se houver falha de conexão, autenticação, permissão ou outra falha na gravação, a alteração permanece no cache. O app avisa que ela está aguardando envio.
+2. Enquanto houver pendências, novas confirmações também entram na fila, mantendo a ordem das alterações. Elas não são enviadas isoladamente nem antecipadas às anteriores.
+3. Quando a conexão e o acesso ao Drive estiverem disponíveis, clique em **"☁️ Enviar alterações pendentes"** na tela principal. O app baixa a planilha uma vez, aplica toda a fila na ordem em que as alterações foram confirmadas e faz **um único upload**.
+4. Cada alteração usa o nome e o timestamp registrados na confirmação original, no horário de Brasília. O horário do envio não substitui o horário da edição. Em edições sucessivas do mesmo cadastro, as colunas 51/52 mostram a última edição aplicada, como antes.
+5. Se qualquer item não puder ser aplicado ou o envio falhar, a fila inteira permanece no cache. Ela só é removida após a confirmação de sucesso. Um novo clique tenta enviar as pendências novamente.
+
 ---
 
-Sem as credenciais do Drive, o app funciona em **modo somente sessão**: mostra um aviso e as edições valem apenas enquanto a página estiver aberta (nada é gravado na planilha).
+Sem as credenciais do Drive, o app mostra o aviso e mantém as alterações no **cache pendente**. Depois de configurar o acesso, use o botão da tela principal para enviá-las à planilha.
 
 Crie o arquivo `.streamlit/secrets.toml` (local) ou preencha **Settings → Secrets** no Streamlit Community Cloud:
 

@@ -13,12 +13,18 @@ Secrets (Streamlit Cloud → Settings → Secrets):
 """
 
 import html as _html
+import hashlib
 import json
+import os
 import re as _re
+import sqlite3
+import threading
 import unicodedata as _ud
 import uuid
+from contextlib import closing
 from datetime import date, datetime, time, timedelta, timezone
 from io import BytesIO
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -172,6 +178,29 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
+
+
+def show_offline_map() -> None:
+    """Exibe o HTML versionado junto ao app, sem carregar os cadastros ou acessar o Drive."""
+    import streamlit.components.v1 as components
+
+    st.markdown('[← Voltar ao cadastro](./)')
+    map_path = Path(__file__).resolve().parent / "mapa_enderecos_openstreetmap.html"
+    try:
+        map_html = map_path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        st.error("Mapa offline não encontrado. Coloque o arquivo "
+                 "mapa_enderecos_openstreetmap.html na mesma pasta do main.py no repositório.")
+    except (OSError, UnicodeError):
+        st.error("Não foi possível abrir o mapa offline. Verifique o arquivo "
+                 "mapa_enderecos_openstreetmap.html no repositório.")
+    else:
+        components.html(map_html, height=850, scrolling=True)
+
+
+if st.query_params.get("mapa") == "offline":
+    show_offline_map()
+    st.stop()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -364,6 +393,105 @@ SECTION_BOTTOM = ("📝 Observações e avaliação do entrevistador", [
 
 
 # ──────────────────────────────────────────────────────────────
+#  CACHE PERSISTENTE DE ALTERAÇÕES PENDENTES (no servidor do app)
+# ──────────────────────────────────────────────────────────────
+def _drive_file_id() -> str:
+    try:
+        return str(st.secrets.get("GDRIVE_FILE_ID", "")).strip()
+    except Exception:
+        return ""
+
+
+def _cache_path() -> Path:
+    folder = Path(os.environ.get("CADASTRO_CACHE_DIR") or
+                  Path(__file__).resolve().parent / ".cadastro_cache")
+    source = hashlib.sha256(GITHUB_RAW_URL.encode("utf-8")).hexdigest()[:24]
+    return folder / f"pendencias-{source}.sqlite3"
+
+
+def _cache_json_default(value):
+    if isinstance(value, (datetime, date)):
+        return {"__cache_type__": type(value).__name__, "value": value.isoformat()}
+    raise TypeError(f"Tipo não suportado no cache: {type(value).__name__}")
+
+
+def _cache_json_hook(value):
+    if value.get("__cache_type__") == "datetime":
+        return datetime.fromisoformat(value["value"])
+    if value.get("__cache_type__") == "date":
+        return date.fromisoformat(value["value"])
+    return value
+
+
+def _open_cache():
+    path = _cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=30)
+    try:
+        conn.execute("""CREATE TABLE IF NOT EXISTS pending (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            file_id TEXT NOT NULL,
+            payload TEXT NOT NULL
+        )""")
+        conn.commit()
+        return conn
+    except Exception:
+        conn.close()
+        raise
+
+
+def pending_changes() -> list[dict]:
+    """Fila compartilhada pelas sessões deste app, isolada por origem e arquivo do Drive."""
+    if not _cache_path().exists():
+        return []
+    with closing(_open_cache()) as conn:
+        rows = conn.execute(
+            "SELECT payload FROM pending WHERE file_id IN ('', ?) ORDER BY seq",
+            (_drive_file_id(),),
+        ).fetchall()
+    return [json.loads(row[0], object_hook=_cache_json_hook) for row in rows]
+
+
+def cache_change(operation: dict) -> None:
+    payload = json.dumps(operation, ensure_ascii=False, default=_cache_json_default)
+    with closing(_open_cache()) as conn, conn:
+        conn.execute("INSERT OR IGNORE INTO pending (id, file_id, payload) VALUES (?, ?, ?)",
+                     (operation["id"], _drive_file_id(), payload))
+
+
+def _bind_cached_changes(operations: list[dict]) -> None:
+    # Vincula pendências criadas sem credenciais antes da primeira tentativa de envio.
+    # Assim, uma troca posterior do arquivo de destino não reaplica esse lote em outro Drive.
+    with closing(_open_cache()) as conn, conn:
+        conn.executemany("UPDATE pending SET file_id = ? WHERE id = ? AND file_id = ''",
+                         [(_drive_file_id(), op["id"]) for op in operations])
+
+
+def _remove_cached_changes(operations: list[dict]) -> None:
+    # Só os IDs confirmados são removidos; inclusões feitas durante o envio ficam na fila.
+    with closing(_open_cache()) as conn, conn:
+        conn.executemany("DELETE FROM pending WHERE id = ?", [(op["id"],) for op in operations])
+
+
+def _cached_parent(operations: list[dict], numero: str, user_row: dict) -> str | None:
+    """Liga edições sucessivas da mesma versão, inclusive se ela gerar uma linha com sufixo."""
+    for op in reversed(operations):
+        if (op["numero"] == numero and
+                user_row.get(AUDIT_NAME_COL) == op["editor"] and
+                user_row.get(AUDIT_TS_COL) == norm_cell(op["ts"]) and
+                all(user_row.get(col) == ch["new"] for col, ch in op["changes"].items())):
+            return op["id"]
+    return None
+
+
+@st.cache_resource
+def _drive_lock():
+    # Streamlit executa sessões em threads; serializa leitura/alteração/envio do xlsx.
+    return threading.RLock()
+
+
+# ──────────────────────────────────────────────────────────────
 #  CARGA DE DADOS
 # ──────────────────────────────────────────────────────────────
 def _fetch_gdrive(url: str) -> bytes:
@@ -445,7 +573,27 @@ def with_overlay(base: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-df = with_overlay(_base_df)
+def with_pending_overlay(base: pd.DataFrame, operations: list[dict]) -> pd.DataFrame:
+    """Mostra as pendências sem descartá-las até a confirmação do Drive."""
+    if base is None or not operations:
+        return base
+    out = base.copy()
+    for op in operations:
+        mask = out["NUMERO"] == op["numero"]
+        for col, ch in op["changes"].items():
+            if col in out.columns:
+                out.loc[mask, col] = ch["new"]
+        out.loc[mask, AUDIT_NAME_COL] = op["editor"]
+        out.loc[mask, AUDIT_TS_COL] = norm_cell(op["ts"])
+    return out
+
+
+try:
+    _cached_changes, _cache_error = pending_changes(), None
+except Exception as exc:
+    _cached_changes, _cache_error = [], str(exc)
+
+df = with_pending_overlay(with_overlay(_base_df), _cached_changes)
 
 # ──────────────────────────────────────────────────────────────
 #  GOOGLE DRIVE — GRAVAÇÃO
@@ -585,14 +733,47 @@ def patch_workbook(wb, numero: str, changes: dict, editor: str, ts: datetime,
     return None, novo
 
 
-def save_record_to_drive(numero: str, changes: dict, editor: str, ts: datetime,
-                         user_row: dict | None = None) -> tuple[str | None, str | None]:
-    """Baixa o xlsx do Drive, aplica as alterações e re-envia. Devolve (erro, numero_novo_se_conflito)."""
+_SYNC_SHEET = "_PS_SYNC_CACHE"
+_SYNC_HEADERS = ("OPERATION_ID", "NUMERO", "DESTINO", "EDITOR", "TIMESTAMP")
+
+
+def _patch_cached_batch(wb, operations: list[dict]) -> tuple[str | None, dict, bool]:
+    """Aplica a fila em ordem e registra IDs para retomar envios com resposta perdida."""
+    if _SYNC_SHEET in wb.sheetnames:
+        journal = wb[_SYNC_SHEET]
+        if tuple(journal.cell(1, c).value for c in range(1, 6)) != _SYNC_HEADERS:
+            return f"A aba {_SYNC_SHEET} já existe com outro formato.", {}, False
+    else:
+        journal = wb.create_sheet(_SYNC_SHEET)
+        journal.append(_SYNC_HEADERS)
+        journal.sheet_state = "veryHidden"
+
+    applied = {row[0]: row[2] for row in journal.iter_rows(min_row=2, values_only=True)}
+    targets, modified = {}, False
+    for op in operations:
+        if op["id"] in applied:
+            targets[op["id"]] = applied[op["id"]]
+            continue
+        numero = applied.get(op.get("parent_id"), op["numero"])
+        err, novo = patch_workbook(wb, numero, op["changes"], op["editor"],
+                                   op["ts"], op.get("row"))
+        if err:
+            return f"Cadastro Nº {op['numero']}: {err}", {}, False
+        target = novo or numero
+        journal.append((op["id"], op["numero"], target, op["editor"], op["ts"]))
+        journal.cell(journal.max_row, 5).number_format = AUDIT_TS_FORMAT
+        targets[op["id"]] = applied[op["id"]] = target
+        modified = True
+    return None, targets, modified
+
+
+def save_changes_to_drive(operations: list[dict]) -> tuple[str | None, dict]:
+    """Um download e um upload para TODO o lote; nenhuma exclusão local em caso de erro."""
     try:
         import openpyxl
         from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
-        file_id = st.secrets["GDRIVE_FILE_ID"]
+        file_id = _drive_file_id()
         service = _get_drive_service()
 
         buf = BytesIO()
@@ -603,24 +784,83 @@ def save_record_to_drive(numero: str, changes: dict, editor: str, ts: datetime,
         buf.seek(0)
 
         wb = openpyxl.load_workbook(buf)
-        err, novo = patch_workbook(wb, numero, changes, editor, ts, user_row)
+        err, targets, modified = _patch_cached_batch(wb, operations)
         if err:
             load_data.clear()
-            return err, None
+            return err, {}
 
-        out = BytesIO()
-        wb.save(out)
-        out.seek(0)
-        media = MediaIoBaseUpload(
-            out,
-            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            resumable=False,
-        )
-        service.files().update(fileId=file_id, media_body=media).execute()
+        if modified:
+            out = BytesIO()
+            wb.save(out)
+            out.seek(0)
+            media = MediaIoBaseUpload(
+                out,
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                resumable=False,
+            )
+            service.files().update(fileId=file_id, media_body=media).execute()
         load_data.clear()
-        return None, novo
+        return None, targets
     except Exception as exc:
-        return str(exc), None
+        return str(exc), {}
+
+
+def save_or_cache(pending: dict, editor: str) -> tuple[bool, str | None, str | None]:
+    """Devolve (ficou_em_cache, erro_de_envio, destino). Erros locais mantêm o formulário aberto."""
+    with _drive_lock():
+        queued = pending_changes()
+        if "operation" not in pending:
+            pending["operation"] = {
+                "id": uuid.uuid4().hex,
+                "numero": pending["numero"],
+                "changes": pending["changes"],
+                "editor": editor,
+                "ts": datetime.now(SP_TZ).replace(tzinfo=None, microsecond=0),
+                "row": pending.get("row") or {},
+                "parent_id": _cached_parent(queued, pending["numero"], pending.get("row") or {}),
+            }
+        operation = pending["operation"]
+        # Grava antes da rede: uma queda do processo durante o upload não perde a edição.
+        cache_change(operation)
+        if any(op["id"] != operation["id"] for op in queued) or not _gdrive_write_enabled():
+            return True, None, None
+        _bind_cached_changes([operation])
+        err, targets = save_changes_to_drive([operation])
+        if err:
+            return True, err, None
+        _remove_cached_changes([operation])
+        return False, None, targets[operation["id"]]
+
+
+def sync_cached_changes() -> tuple[str | None, list[dict], dict]:
+    """Envia a fila inteira preservando o autor, os tipos e o timestamp de cada confirmação."""
+    with _drive_lock():
+        try:
+            operations = pending_changes()
+            if not operations:
+                return None, [], {}
+            if not _gdrive_write_enabled():
+                return "Configure as credenciais do Google Drive para enviar as pendências.", [], {}
+            _bind_cached_changes(operations)
+            err, targets = save_changes_to_drive(operations)
+            if err:
+                return err, [], {}
+            _remove_cached_changes(operations)
+            return None, operations, targets
+        except Exception as exc:
+            return str(exc), [], {}
+
+
+def _overlay_saved_change(operation: dict, target: str | None = None) -> None:
+    numero = operation["numero"]
+    if target and target != numero:
+        # Como na gravação original, a linha em conflito permanece intacta.
+        st.session_state.edits.pop(numero, None)
+        return
+    ed = {col: ch["new"] for col, ch in operation["changes"].items()}
+    ed[AUDIT_NAME_COL] = operation["editor"]
+    ed[AUDIT_TS_COL] = norm_cell(operation["ts"])
+    st.session_state.edits.setdefault(numero, {}).update(ed)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -819,25 +1059,19 @@ def confirm_dialog(pending: dict):
         if len(editor) < 2:
             st.error("Informe seu nome para confirmar.")
             return
-        ts = datetime.now(SP_TZ).replace(tzinfo=None, microsecond=0)
-        novo = None
-        if _gdrive_write_enabled():
+        try:
             with st.spinner("Salvando no Google Drive…"):
-                err, novo = save_record_to_drive(numero, changes, editor, ts, pending.get("row"))
-            if err:
-                st.error(f"Não foi possível salvar: {err}")
-                return
+                cached, err, target = save_or_cache(pending, editor)
+        except Exception as exc:
+            st.error(f"Não foi possível registrar a alteração no cache: {exc}")
+            return
+        if cached:
+            flash = ("warning", f"Cadastro Nº {numero} salvo no cache. "
+                     "Use a opção de enviar alterações pendentes na tela principal quando a conexão voltar.")
+        else:
             flash = ("info", f"✅ Cadastro Nº {numero} salvo.")
-        else:
-            flash = ("warning", f"Cadastro Nº {numero} alterado apenas nesta sessão (Drive não configurado).")
 
-        if novo:  # conflito: o original ficou intacto; as alterações foram para a nova linha (sem aviso extra)
-            pass
-        else:
-            ed = {col: ch["new"] for col, ch in changes.items()}
-            ed[AUDIT_NAME_COL] = editor
-            ed[AUDIT_TS_COL] = norm_cell(ts)
-            st.session_state.edits.setdefault(numero, {}).update(ed)
+        _overlay_saved_change(pending["operation"], target)
         st.session_state.pop("pending", None)
         st.session_state.flash = flash
         st.rerun()
@@ -958,6 +1192,38 @@ def render_record(row: pd.Series, numero_query: str = "") -> None:
         edit_dialog(numero, row.to_dict(), nonce=uuid.uuid4().hex[:8])
 
 
+def record_from_edit_link() -> pd.Series | None:
+    """Consome ?id=NUMERO uma vez por link na sessão, sem reabrir o popup nos reruns."""
+    ids = st.query_params.get_all("id")
+    if not ids:
+        st.session_state.pop("_edit_link_handled", None)
+        return None
+    signature = tuple(ids)
+    if st.session_state.get("_edit_link_handled") == signature:
+        return None
+    # O encadeamento de uma edição em andamento tem prioridade sobre um novo link.
+    if (st.session_state.get("open_dialog") in ("confirm", "edit_back") and
+            st.session_state.get("pending")):
+        return None
+    st.session_state._edit_link_handled = signature
+    if (len(ids) != 1 or len(ids[0]) > 100 or
+            not _re.fullmatch(r"[0-9]+(?:-[A-Z]+)?", ids[0].strip())):
+        st.warning("Link de edição inválido. Informe um único número no parâmetro id.")
+        return None
+    numero = ids[0].strip()
+    # Executado antes de criar o widget; depois disso a busca continua funcionando normalmente.
+    st.session_state.q_num = numero
+    results = search_numero_exact(numero)
+    if results.empty:
+        st.warning("O cadastro indicado no link não foi encontrado.")
+        return None
+    if len(results) != 1:
+        st.warning("Há mais de um cadastro com o número indicado no link. "
+                   "Escolha o cadastro abaixo para editar.")
+        return None
+    return results.iloc[0]
+
+
 # ──────────────────────────────────────────────────────────────
 #  UI
 # ──────────────────────────────────────────────────────────────
@@ -985,6 +1251,24 @@ if not _gdrive_write_enabled():
         icon="🔒",
     )
 
+if _cache_error:
+    st.error(f"Não foi possível ler as alterações pendentes do cache: {_cache_error}")
+elif _cached_changes:
+    _n_pending = len(_cached_changes)
+    _pending_label = "alteração" if _n_pending == 1 else "alterações"
+    st.warning(f"{_n_pending} {_pending_label} em cache aguardando envio ao Google Drive.", icon="⚠️")
+    if st.button("☁️ Enviar alterações pendentes", width="stretch", key="sync_cached_changes"):
+        with st.spinner("Enviando todas as alterações pendentes ao Google Drive…"):
+            _sync_error, _sent, _targets = sync_cached_changes()
+        if _sync_error:
+            st.error(f"Não foi possível enviar: {_sync_error}. As alterações continuam no cache.")
+        else:
+            for _op in _sent:
+                _overlay_saved_change(_op, _targets[_op["id"]])
+            _sent_label = "alteração enviada" if len(_sent) == 1 else "alterações enviadas"
+            st.session_state.flash = ("info", f"✅ {len(_sent)} {_sent_label} ao Google Drive.")
+            st.rerun()
+
 if load_error or df is None:
     st.error("❌ Não foi possível carregar o arquivo.")
     st.markdown(
@@ -999,6 +1283,8 @@ if load_error or df is None:
         with st.expander("Detalhes do erro"):
             st.code(load_error)
     st.stop()
+
+_edit_link_row = record_from_edit_link()
 
 query_num = st.text_input("Buscar por Número", placeholder="🔢  Número do registro…",
                           label_visibility="collapsed", key="q_num")
@@ -1036,7 +1322,8 @@ else:
   <div class="icon">🔍</div>
   <p>Digite o número de registro conforme o
   <a href="https://www.google.com/maps/d/viewer?mid=10OImJnmvNDhH2FrCKoVIjK0DUt0XuVE"
-     target="_blank" rel="noopener noreferrer">Google Maps</a></p>
+     target="_blank" rel="noopener noreferrer">Google Maps</a> ou o
+  <a href="?mapa=offline" target="_blank" rel="noopener noreferrer">OpenStreetMap (offline)</a></p>
   <p style="margin-top:1.5rem;font-size:0.8rem;color:#bdbdbd">{len(df)} cadastros</p>
 </div>
 """,
@@ -1057,3 +1344,6 @@ elif _next == "edit_back" and _pending:
     _row = _row_dict(_pending["numero"])
     if _row:
         edit_dialog(_pending["numero"], _row, nonce=uuid.uuid4().hex[:8], draft=_pending["widgets"])
+elif _edit_link_row is not None and not st.session_state.get(f"edit_{_edit_link_row.name}"):
+    # O botão manual pode já ter aberto o diálogo nesta execução.
+    edit_dialog(cell(_edit_link_row, "NUMERO"), _edit_link_row.to_dict(), nonce=uuid.uuid4().hex[:8])
