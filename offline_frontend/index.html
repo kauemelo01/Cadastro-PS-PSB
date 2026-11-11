@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1b5e20">
+  <title>Cadastro de Visitas · Offline</title>
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+<main>
+  <header id="standalone-header" hidden><h1>📋 Cadastro de Visitas</h1><p>Pastoral Social · Jardim Colombo</p></header>
+  <div id="message" role="status" aria-live="polite" hidden></div>
+  <section class="cache-panel" aria-label="Cache e envio">
+    <strong id="connection">Verificando cache…</strong>
+    <p id="pending-count">Carregando pendências deste aparelho…</p>
+    <button id="sync" type="button" disabled>☁️ Enviar todas as alterações</button>
+    <a id="offline-link" target="_blank" rel="noopener" hidden>Abrir versão offline neste aparelho ↗</a>
+    <p id="offline-hint" class="hint">Abra a versão offline uma vez com internet para continuar usando e reabrir o cadastro sem conexão.</p>
+  </section>
+  <section id="home">
+    <label for="query" class="sr-only">Buscar por número do registro</label>
+    <input id="query" inputmode="text" placeholder="🔢 Número do registro…" autocomplete="off">
+    <div id="results"></div>
+  </section>
+  <section id="editor" hidden>
+    <h2 id="edit-title"></h2>
+    <p class="hint">Só os campos que você alterar serão gravados.</p>
+    <form id="edit-form">
+      <div id="fields"></div>
+      <div class="actions"><button type="submit">💾 Revisar e salvar</button><button id="cancel-edit" type="button" class="secondary">Cancelar</button></div>
+    </form>
+  </section>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+    <h2 id="confirm-title">Confirmar alterações</h2>
+    <div id="changes-list"></div>
+    <form id="confirm-form">
+      <label for="editor-name">Seu nome (obrigatório)</label>
+      <input id="editor-name" required minlength="2" autocomplete="name">
+      <p class="hint">A data/hora desta confirmação será mantida no envio, mesmo que você esteja sem internet.</p>
+      <div class="actions"><button type="submit" id="confirm-save">✅ Confirmar e salvar</button><button id="back" type="button" class="secondary">Voltar</button></div>
+    </form>
+  </dialog>
+</main>
+</body>
+</html>
