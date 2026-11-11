@@ -48,7 +48,6 @@ AUDIT_NAME_POS = 51
 AUDIT_TS_POS = 52
 AUDIT_TS_FORMAT = "dd/mm/yyyy hh:mm:ss"
 
-SEARCH_COLS = ["NOME", "CPF"]  # busca geral (a busca por NUMERO tem campo próprio)
 CPF_COLS = {"CPF", "CPF RESERVA 1", "CPF RESERVA 2"}
 
 # ──────────────────────────────────────────────────────────────
@@ -131,9 +130,12 @@ st.markdown(
     background: #fff8e1; border: 2px solid #f9a825; border-radius: 14px; padding: 0.9rem 1rem 0.6rem;
   }
   .cestas-title { font-size: 0.8rem; font-weight: 800; letter-spacing: .04em; color: #e65100; margin-bottom: 4px; }
-  .st-key-cestas_box [data-testid="stButtonGroup"] { width: 100%; }
-  .st-key-cestas_box [data-testid="stButtonGroup"] > div { width: 100%; display: flex; }
-  .st-key-cestas_box [data-testid="stButtonGroup"] button { flex: 1; min-height: 3.2rem; font-size: 1.05rem; font-weight: 800; }
+  .st-key-cestas_box [role="radiogroup"] { gap: 0.45rem; width: 100%; }
+  .st-key-cestas_box [role="radiogroup"] label {
+    width: 100%; box-sizing: border-box; background: #fff; border: 2px solid #f9a825;
+    border-radius: 12px; padding: 0.7rem 0.9rem; margin: 0;
+  }
+  .st-key-cestas_box [role="radiogroup"] label p { font-weight: 800; font-size: 1.02rem; }
 
   /* Popup de confirmação */
   .chg-list { max-height: 38vh; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 10px; padding: 4px 10px; }
@@ -155,6 +157,7 @@ st.markdown(
     .info-row  { border-bottom-color: #2a3a2a !important; }
     .st-key-cestas_box { background: #3e2e10 !important; border-color: #f9a825 !important; }
     .cestas-title { color: #ffcc80 !important; }
+    .st-key-cestas_box [role="radiogroup"] label { background: #2a2110 !important; }
     .chg-list, .chg-item { border-color: #2e3e2e !important; }
     .chg-label { color: #a5d6a7 !important; }
     .chg-old { color: #ef9a9a !important; }
@@ -297,7 +300,7 @@ FIELD_SPECS: dict[str, dict] = {
         "Alguém possui doença física ou mental grave?", "textarea"),
     "INFORMAÇÕES IMPORTANTES SOBRE A ESTRUTURA DA CASA E A SAÚDE DOS MORADORES": F(
         "Informações importantes sobre a estrutura da casa e a saúde dos moradores", "textarea"),
-    "ELETRODOMÉSTICOS E FACILIDADES": F("Eletrodomésticos e facilidades", "multi", options=[
+    "ELETRODOMÉSTICOS E FACILIDADES": F("Eletrodomésticos e facilidades", "multi", note="Pode marcar mais de um", options=[
         "FOGÃO", "GELADEIRA", "TELEVISÃO", "MÁQUINA DE LAVAR", "MICROONDAS", "INTERNET", "COMPUTADOR"]),
     # Contas da casa
     "AS CONTAS DA CASA [CASA PRÓPRIA?]": F("Casa própria?", "yesno"),
@@ -338,7 +341,8 @@ SECTIONS_TOP = [
         "OS MORADORES DA CASA [QUANTOS ADULTOS MORAM NA CASA?]",
         "OS MORADORES DA CASA [QUANTOS ADULTOS TRABALHAM ?]",
         "OS MORADORES DA CASA [QUANTAS CRIANÇAS MORAM NA CASA ?]",
-        "OS MORADORES DA CASA [QUANTAS CRIANÇAS ESTUDAM NA CASA ?]"]),
+        "OS MORADORES DA CASA [QUANTAS CRIANÇAS ESTUDAM NA CASA ?]",
+        COL_REFEICOES]),
     ("🏠 Condições da casa", [
         "CONDIÇÕES DA CASA [A CASA POSSUI BANHEIRO?]", "CONDIÇÕES DA CASA [CHOVE DENTRO DA CASA?]",
         "CONDIÇÕES DA CASA [EXISTE CAMA PARA TODOS?]", "CONDIÇÕES DA CASA [POSSUI LUZ ELÉTRICA?]",
@@ -651,15 +655,24 @@ def _field_widget(col: str, spec: dict, initial: str, key: str, draft: dict):
         val = st.selectbox(label, opts, index=idx, key=key, placeholder="Selecione…")
         return w_init, val, val or ""
 
-    if kind in ("yesno", "choice"):
-        opts = list(spec.get("options", ["SIM", "NÃO"]))
+    if kind == "choice":  # lista vertical (cabe inteira em telas estreitas)
+        opts = list(spec["options"])
+        if initial and initial not in opts:
+            opts.append(initial)
+        w_init = initial or None
+        start = draft.get(col, w_init)
+        idx = opts.index(start) if start in opts else None
+        val = st.radio(label, opts, index=idx, key=key, label_visibility="collapsed")
+        return w_init, val, val or ""
+
+    if kind == "yesno":
+        opts = ["SIM", "NÃO"]
         if initial and initial not in opts:
             opts.append(initial)  # preserva valores antigos fora da lista
         w_init = initial or None
         start = draft.get(col, w_init)
-        if kind == "yesno":
-            st.markdown(f"<div style='font-size:.875rem;margin-bottom:2px'>{_html.escape(label)}</div>",
-                        unsafe_allow_html=True)
+        st.markdown(f"<div style='font-size:.875rem;margin-bottom:2px'>{_html.escape(label)}</div>",
+                    unsafe_allow_html=True)
         val = st.segmented_control(label, opts, selection_mode="single", default=start,
                                    key=key, label_visibility="collapsed")
         return w_init, val, val or ""
@@ -677,6 +690,8 @@ def _field_widget(col: str, spec: dict, initial: str, key: str, draft: dict):
         opts = list(spec["options"]) + [t for t in toks if t not in spec["options"]]
         val = st.multiselect(label, opts, default=draft.get(col, toks), key=key,
                              placeholder="Selecione…")
+        if spec.get("note"):
+            st.caption(spec["note"])
         ordered = [o for o in opts if o in val]
         return toks, val, ", ".join(ordered)
 
@@ -746,8 +761,6 @@ def edit_dialog(numero: str, row: dict, nonce: str, draft: dict | None = None):
     # ── Destaque: avaliação de necessidade de cestas (entre os últimos campos)
     with st.container(key="cestas_box"):
         st.markdown("<div class='cestas-title'>⭐ AVALIAÇÃO — CESTAS BÁSICAS</div>", unsafe_allow_html=True)
-        draw(COL_REFEICOES)
-        st.write("")
         st.markdown("**Precisa receber cestas básicas da Pastoral Social?**")
         draw(COL_CESTAS)
 
@@ -862,24 +875,6 @@ def search_numero_exact(query: str) -> pd.DataFrame:
     return df[df["NUMERO"].str.strip() == q].copy()
 
 
-def search_df(query: str, cols: list[str] | None = None) -> pd.DataFrame:
-    q_norm = _normalize(query.strip())
-    if not q_norm or df is None:
-        return pd.DataFrame()
-    cols = cols or SEARCH_COLS
-    q_cpf = _strip_cpf(q_norm)
-    mask = pd.Series(False, index=df.index)
-    for col in cols:
-        if col not in df.columns:
-            continue
-        if col in CPF_COLS:
-            if q_cpf:
-                mask |= df[col].apply(lambda v: _strip_cpf(_normalize(v))).str.contains(q_cpf, regex=False)
-        else:
-            mask |= df[col].apply(_normalize).str.contains(q_norm, regex=False)
-    return df[mask].copy()
-
-
 # ──────────────────────────────────────────────────────────────
 #  CARD DO REGISTRO
 # ──────────────────────────────────────────────────────────────
@@ -914,44 +909,13 @@ def highlight(text: str, query: str) -> str:
     return "".join(out)
 
 
-def highlight_cpf(text: str, query: str) -> str:
-    """Marca o CPF mesmo que a busca esteja sem pontos/traço."""
-    if not text:
-        return ""
-    res = highlight(text, query)
-    if "<mark" in res:
-        return res
-    q = _strip_cpf(_normalize((query or "").strip()))
-    if q and q in _strip_cpf(_normalize(text)):
-        return f'<mark class="hl">{_html.escape(text)}</mark>'
-    return res
-
-
-def sort_results(results: pd.DataFrame, query: str) -> pd.DataFrame:
-    if results.empty or not query:
-        return results
-    q_norm = _normalize(query.strip())
-    q_cpf = _strip_cpf(q_norm)
-
-    def priority(row: pd.Series) -> int:
-        if q_norm in _normalize(str(row.get("NOME", ""))):
-            return 0
-        if q_cpf and q_cpf in _strip_cpf(_normalize(str(row.get("CPF", "")))):
-            return 0
-        return 1
-
-    results = results.copy()
-    results["_pri"] = results.apply(priority, axis=1)
-    return results.sort_values("_pri", kind="stable").drop(columns=["_pri"])
-
-
 def _row(label: str, value_html: str) -> str:
     return (f'<div class="info-row"><span class="info-label">{label}</span>'
             f'<span class="info-value">{value_html or "<span class=info-empty>—</span>"}</span></div>')
 
 
-def render_record(row: pd.Series, query: str = "", numero_query: str = "") -> None:
-    q, q_num = query.strip(), numero_query.strip()
+def render_record(row: pd.Series, numero_query: str = "") -> None:
+    q_num = numero_query.strip()
     nome, numero, cpf = cell(row, "NOME"), cell(row, "NUMERO"), cell(row, "CPF")
     tipo, cid, tel = cell(row, "TIPO"), cell(row, "CID 2026"), cell(row, "TELEFONE")
     benef = cell(row, "TIPO DE BENEFICIÁRIO [TIPO]")
@@ -969,11 +933,11 @@ def render_record(row: pd.Series, query: str = "", numero_query: str = "") -> No
     cestas_html = f'<span class="badge {cestas_cls}">{_html.escape(cestas)}</span>' if cestas else ""
     tipo_html = f'<span class="badge b-tipo">{_html.escape(tipo)}</span>' if tipo else ""
 
-    numero_hl = highlight(numero, q_num) if q_num else highlight(numero, q)
+    numero_hl = highlight(numero, q_num)
     h = f"""
     <div class="card">
-      <div class="card-name">{highlight(nome, q) or "—"}</div>
-      <div class="card-num">Nº {numero_hl} &nbsp;·&nbsp; CPF {highlight_cpf(cpf, q) if cpf else "—"}</div>
+      <div class="card-name">{_html.escape(nome) or "—"}</div>
+      <div class="card-num">Nº {numero_hl} &nbsp;·&nbsp; CPF {_html.escape(cpf) if cpf else "—"}</div>
       <div class="info-grid">
         {_row("Tipo", tipo_html)}
         {_row("CID 2026", _html.escape(cid))}
@@ -1038,52 +1002,41 @@ if load_error or df is None:
 
 query_num = st.text_input("Buscar por Número", placeholder="🔢  Número do registro…",
                           label_visibility="collapsed", key="q_num")
-query_gen = st.text_input("Buscar por nome ou CPF", placeholder="🔍  Nome ou CPF…",
-                          label_visibility="collapsed", key="q_gen")
 
 
-def show_results(num_results: pd.DataFrame, gen_results: pd.DataFrame, num_query: str, gen_query: str) -> None:
-    gen_idx = set(gen_results.index) if not gen_results.empty else set()
-    num_idx = set(num_results.index) if not num_results.empty else set()
-    all_idx = gen_idx | num_idx
-
-    if not all_idx:
+def show_results(results: pd.DataFrame, num_query: str) -> None:
+    if results.empty:
         st.markdown(
             """
 <div class="empty-state">
   <div class="icon">🔎</div>
-  <p>Nenhum registro encontrado.<br>Tente outro nome, CPF ou número.</p>
+  <p>Nenhum registro encontrado.<br>Confira o número e tente de novo.</p>
 </div>
 """,
             unsafe_allow_html=True,
         )
         return
 
-    combined = sort_results(df.loc[sorted(all_idx)].copy(), gen_query or num_query)
-    count = len(combined)
+    count = len(results)
     st.markdown(
         f'<div class="result-count">{count} registro{"s" if count > 1 else ""} '
         f'encontrado{"s" if count > 1 else ""}</div>',
         unsafe_allow_html=True,
     )
-    for _, row in combined.iterrows():
-        if row.name in gen_idx:
-            render_record(row, query=gen_query)
-        else:
-            render_record(row, numero_query=num_query)
+    for _, row in results.iterrows():
+        render_record(row, numero_query=num_query)
 
 
-num_results = search_numero_exact(query_num) if query_num else pd.DataFrame()
-gen_results = search_df(query_gen) if query_gen else pd.DataFrame()
-
-if query_num or query_gen:
-    show_results(num_results, gen_results, query_num, query_gen)
+if query_num.strip():
+    show_results(search_numero_exact(query_num), query_num)
 else:
     st.markdown(
         f"""
 <div class="empty-state">
   <div class="icon">🔍</div>
-  <p>Digite um número de registro<br>ou busque por nome ou CPF.</p>
+  <p>Digite o número de registro conforme o
+  <a href="https://www.google.com/maps/d/viewer?mid=10OImJnmvNDhH2FrCKoVIjK0DUt0XuVE"
+     target="_blank" rel="noopener noreferrer">Google Maps</a></p>
   <p style="margin-top:1.5rem;font-size:0.8rem;color:#bdbdbd">{len(df)} cadastros</p>
 </div>
 """,
