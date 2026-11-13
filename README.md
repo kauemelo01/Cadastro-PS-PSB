@@ -85,6 +85,16 @@ A cada confirmação, o app registra a alteração no cache local antes de tenta
 4. Cada alteração usa o nome e o timestamp registrados na confirmação original, no horário de Brasília. O horário do envio não substitui o horário da edição. Em edições sucessivas do mesmo cadastro, as colunas 51/52 mostram a última edição aplicada, como antes.
 5. Se qualquer item não puder ser aplicado ou o envio falhar, a fila inteira permanece no cache. Ela só é removida após a confirmação de sucesso. Um novo clique tenta enviar as pendências novamente.
 
+### Criar um registro novo
+
+Clique em **"Criar registro novo"**, logo abaixo do filtro da página inicial. O mesmo popup de cadastro abre com todos os campos em branco. O campo **Número do registro** continua desativado e vazio; nenhum número nem sufixo é gerado para essa inclusão.
+
+Preencha os dados, clique em **"💾 Salvar"** e confirme com o nome de quem está cadastrando. O nome da pessoa cadastrada permanece obrigatório. O botão **"↩️ Voltar"** preserva o preenchimento para revisão, e **"Cancelar"** descarta o formulário sem salvar.
+
+A inclusão acrescenta uma linha **ao final da planilha**, preservando as anteriores, inclusive os cadastros que já estejam sem número. Os campos não preenchidos ficam vazios. As colunas 51 e 52 recebem o nome do usuário e o timestamp da confirmação, no horário de Brasília.
+
+O cadastro novo usa o mesmo cache e o mesmo envio em lote das edições existentes. Cada inclusão tem um identificador técnico interno, que não é gravado no campo Número de Registro; assim, várias inclusões sem número permanecem independentes, e repetir um envio cuja resposta se perdeu não duplica a linha já recebida pelo Drive. O horário original também é preservado no envio posterior. As inclusões pendentes contam no aviso de alterações em cache e não são aplicadas sobre outras linhas sem número.
+
 ---
 
 Sem as credenciais do Drive, o app mostra o aviso e mantém as alterações no **cache pendente**. Depois de configurar o acesso, use o botão da tela principal para enviá-las à planilha.

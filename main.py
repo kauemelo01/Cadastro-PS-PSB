@@ -579,6 +579,8 @@ def with_pending_overlay(base: pd.DataFrame, operations: list[dict]) -> pd.DataF
         return base
     out = base.copy()
     for op in operations:
+        if op.get("kind") == "create":
+            continue  # Uma inclusão nunca deve alterar cadastros existentes sem número.
         mask = out["NUMERO"] == op["numero"]
         for col, ch in op["changes"].items():
             if col in out.columns:
@@ -733,6 +735,62 @@ def patch_workbook(wb, numero: str, changes: dict, editor: str, ts: datetime,
     return None, novo
 
 
+def append_record_to_workbook(wb, changes: dict, editor: str, ts: datetime) -> str | None:
+    """Acrescenta uma linha nova, sem atribuir NUMERO nem procurar linhas sem número."""
+    from copy import copy
+    from openpyxl.worksheet.dimensions import ColumnDimension
+
+    ws = wb.active
+    hdr = {}
+    for c in range(1, ws.max_column + 1):
+        h = norm_header(ws.cell(2, c).value)
+        if h:
+            hdr.setdefault(h, c)
+    if "NUMERO" not in hdr:
+        return "Coluna NUMERO não encontrada na planilha."
+    if "NUMERO" in changes:
+        return "O Número de Registro de um cadastro novo deve permanecer em branco."
+    for col in changes:
+        if col not in hdr:
+            return f"Coluna “{col}” não encontrada na planilha."
+    if not norm_cell(changes.get("NOME", {}).get("value")):
+        return "O nome não pode ficar em branco."
+
+    last = max(ws.max_row, 2)
+    target = last + 1
+    for c in range(1, AUDIT_TS_POS + 1):
+        if ws.cell(last, c).has_style:
+            ws.cell(target, c)._style = copy(ws.cell(last, c)._style)
+    for col, ch in changes.items():
+        cell = ws.cell(target, hdr[col])
+        cell.value = ch["value"]
+        if isinstance(ch["value"], datetime):
+            cell.number_format = "dd/mm/yyyy"
+    ws.cell(target, hdr["NUMERO"]).value = None
+
+    for pos, title in ((AUDIT_NAME_POS, AUDIT_NAME_COL), (AUDIT_TS_POS, AUDIT_TS_COL)):
+        for r_hdr, val in ((1, pos), (2, title)):
+            cell = ws.cell(r_hdr, pos)
+            if cell.value in (None, ""):
+                cell.value = val
+                model = ws.cell(r_hdr, 50)
+                if model.has_style:
+                    cell.font, cell.fill = copy(model.font), copy(model.fill)
+                    cell.border, cell.alignment = copy(model.border), copy(model.alignment)
+    ws.cell(target, AUDIT_NAME_POS).value = editor
+    ws.cell(target, AUDIT_TS_POS).value = ts
+    ws.cell(target, AUDIT_TS_POS).number_format = AUDIT_TS_FORMAT
+
+    dims = ws.column_dimensions
+    first = dims["AY"] if "AY" in dims else None
+    if first is not None and first.hidden and (first.max or 51) > AUDIT_TS_POS:
+        dims["BA"] = ColumnDimension(ws, index="BA", min=AUDIT_TS_POS + 1, max=first.max, hidden=True)
+    for letter, idx, width in (("AY", AUDIT_NAME_POS, 26), ("AZ", AUDIT_TS_POS, 20)):
+        d = dims[letter]
+        d.min, d.max, d.hidden, d.width = idx, idx, False, width
+    return None
+
+
 _SYNC_SHEET = "_PS_SYNC_CACHE"
 _SYNC_HEADERS = ("OPERATION_ID", "NUMERO", "DESTINO", "EDITOR", "TIMESTAMP")
 
@@ -754,12 +812,17 @@ def _patch_cached_batch(wb, operations: list[dict]) -> tuple[str | None, dict, b
         if op["id"] in applied:
             targets[op["id"]] = applied[op["id"]]
             continue
-        numero = applied.get(op.get("parent_id"), op["numero"])
-        err, novo = patch_workbook(wb, numero, op["changes"], op["editor"],
-                                   op["ts"], op.get("row"))
+        if op.get("kind") == "create":
+            err = append_record_to_workbook(wb, op["changes"], op["editor"], op["ts"])
+            target = ""
+        else:
+            numero = applied.get(op.get("parent_id"), op["numero"])
+            err, novo = patch_workbook(wb, numero, op["changes"], op["editor"],
+                                       op["ts"], op.get("row"))
+            target = novo or numero
         if err:
-            return f"Cadastro Nº {op['numero']}: {err}", {}, False
-        target = novo or numero
+            label = "Novo cadastro" if op.get("kind") == "create" else f"Cadastro Nº {op['numero']}"
+            return f"{label}: {err}", {}, False
         journal.append((op["id"], op["numero"], target, op["editor"], op["ts"]))
         journal.cell(journal.max_row, 5).number_format = AUDIT_TS_FORMAT
         targets[op["id"]] = applied[op["id"]] = target
@@ -812,13 +875,16 @@ def save_or_cache(pending: dict, editor: str) -> tuple[bool, str | None, str | N
         if "operation" not in pending:
             pending["operation"] = {
                 "id": uuid.uuid4().hex,
-                "numero": pending["numero"],
+                "numero": "" if pending.get("is_new") else pending["numero"],
                 "changes": pending["changes"],
                 "editor": editor,
                 "ts": datetime.now(SP_TZ).replace(tzinfo=None, microsecond=0),
                 "row": pending.get("row") or {},
-                "parent_id": _cached_parent(queued, pending["numero"], pending.get("row") or {}),
+                "parent_id": (None if pending.get("is_new") else
+                              _cached_parent(queued, pending["numero"], pending.get("row") or {})),
             }
+            if pending.get("is_new"):
+                pending["operation"]["kind"] = "create"
         operation = pending["operation"]
         # Grava antes da rede: uma queda do processo durante o upload não perde a edição.
         cache_change(operation)
@@ -852,6 +918,8 @@ def sync_cached_changes() -> tuple[str | None, list[dict], dict]:
 
 
 def _overlay_saved_change(operation: dict, target: str | None = None) -> None:
+    if operation.get("kind") == "create":
+        return  # Cadastros novos não compartilham uma chave NUMERO vazia com outras linhas.
     numero = operation["numero"]
     if target and target != numero:
         # Como na gravação original, a linha em conflito permanece intacta.
@@ -962,11 +1030,19 @@ def _row_dict(numero: str) -> dict | None:
     return None if hit.empty else hit.iloc[0].to_dict()
 
 
+def _new_record_row() -> dict:
+    return {col: "" for col in df.columns}
+
+
 @st.dialog("✏️ Editar Cadastro", width="large")
-def edit_dialog(numero: str, row: dict, nonce: str, draft: dict | None = None):
+def edit_dialog(numero: str, row: dict, nonce: str, draft: dict | None = None, is_new: bool = False):
     draft = draft or {}
-    st.markdown(f"**{md_esc(row.get('NOME') or '—')}**  \nNº {md_esc(numero)}")
-    st.caption("Toque em cada tema para abrir. Só os campos que você alterar serão gravados.")
+    if is_new:
+        st.markdown("**Novo cadastro**")
+        st.caption("Preencha os dados. O Número de Registro permanecerá em branco.")
+    else:
+        st.markdown(f"**{md_esc(row.get('NOME') or '—')}**  \nNº {md_esc(numero)}")
+        st.caption("Toque em cada tema para abrir. Só os campos que você alterar serão gravados.")
 
     changes: dict[str, dict] = {}
     widgets: dict[str, object] = {}
@@ -1014,7 +1090,8 @@ def edit_dialog(numero: str, row: dict, nonce: str, draft: dict | None = None):
     c1, c2 = st.columns(2)
     if c1.button("💾 Salvar", type="primary", width="stretch", key=f"save_{nonce}"):
         errors = []
-        if "NOME" in changes and not changes["NOME"]["new"]:
+        if ((is_new and not changes.get("NOME", {}).get("new")) or
+                ("NOME" in changes and not changes["NOME"]["new"])):
             errors.append("O nome não pode ficar em branco.")
         if not n:
             errors.append("Nenhuma alteração para salvar.")
@@ -1024,6 +1101,8 @@ def edit_dialog(numero: str, row: dict, nonce: str, draft: dict | None = None):
         else:
             st.session_state.pending = {"numero": numero, "nome": row.get("NOME", ""),
                                         "changes": changes, "widgets": widgets, "row": row}
+            if is_new:
+                st.session_state.pending.update(is_new=True, nome=changes["NOME"]["new"])
             st.session_state.open_dialog = "confirm"
             st.rerun()  # fecha este popup; o de confirmação abre em seguida
     if c2.button("Cancelar", width="stretch", key=f"cancel_{nonce}"):
@@ -1035,8 +1114,11 @@ def edit_dialog(numero: str, row: dict, nonce: str, draft: dict | None = None):
 def confirm_dialog(pending: dict):
     numero, nome, changes = pending["numero"], pending["nome"], pending["changes"]
     n = len(changes)
-    st.markdown(f"Você alterou **{n} campo{'s' if n != 1 else ''}** de "
-                f"**{md_esc(nome or '—')}** · Nº {md_esc(numero)}:")
+    if pending.get("is_new"):
+        st.markdown(f"Confirme a criação de **{md_esc(nome or '—')}**, sem Número de Registro:")
+    else:
+        st.markdown(f"Você alterou **{n} campo{'s' if n != 1 else ''}** de "
+                    f"**{md_esc(nome or '—')}** · Nº {md_esc(numero)}:")
 
     def short(s: str) -> str:
         s = s if s else "(vazio)"
@@ -1065,11 +1147,12 @@ def confirm_dialog(pending: dict):
         except Exception as exc:
             st.error(f"Não foi possível registrar a alteração no cache: {exc}")
             return
+        label = "Novo cadastro" if pending.get("is_new") else f"Cadastro Nº {numero}"
         if cached:
-            flash = ("warning", f"Cadastro Nº {numero} salvo no cache. "
+            flash = ("warning", f"{label} salvo no cache. "
                      "Use a opção de enviar alterações pendentes na tela principal quando a conexão voltar.")
         else:
-            flash = ("info", f"✅ Cadastro Nº {numero} salvo.")
+            flash = ("info", f"✅ {label} salvo.")
 
         _overlay_saved_change(pending["operation"], target)
         st.session_state.pop("pending", None)
@@ -1289,6 +1372,9 @@ _edit_link_row = record_from_edit_link()
 query_num = st.text_input("Buscar por Número", placeholder="🔢  Número do registro…",
                           label_visibility="collapsed", key="q_num")
 
+if st.button("Criar registro novo", key="create_new_record", width="stretch"):
+    st.session_state.open_dialog = "create"
+
 
 def show_results(results: pd.DataFrame, num_query: str) -> None:
     if results.empty:
@@ -1338,12 +1424,15 @@ else:
 # ──────────────────────────────────────────────────────────────
 _next = st.session_state.pop("open_dialog", None)
 _pending = st.session_state.get("pending")
-if _next == "confirm" and _pending:
+if _next == "create":
+    edit_dialog("", _new_record_row(), nonce=uuid.uuid4().hex[:8], is_new=True)
+elif _next == "confirm" and _pending:
     confirm_dialog(_pending)
 elif _next == "edit_back" and _pending:
-    _row = _row_dict(_pending["numero"])
+    _row = _pending["row"] if _pending.get("is_new") else _row_dict(_pending["numero"])
     if _row:
-        edit_dialog(_pending["numero"], _row, nonce=uuid.uuid4().hex[:8], draft=_pending["widgets"])
+        edit_dialog(_pending["numero"], _row, nonce=uuid.uuid4().hex[:8], draft=_pending["widgets"],
+                    is_new=_pending.get("is_new", False))
 elif _edit_link_row is not None and not st.session_state.get(f"edit_{_edit_link_row.name}"):
     # O botão manual pode já ter aberto o diálogo nesta execução.
     edit_dialog(cell(_edit_link_row, "NUMERO"), _edit_link_row.to_dict(), nonce=uuid.uuid4().hex[:8])
