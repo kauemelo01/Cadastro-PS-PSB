@@ -1,11 +1,11 @@
 """
 Pastoral Social — Apadrinhamento de Crianças
-Mobile-first Streamlit app que lê e grava a planilha crianças.xlsx no Google Drive.
+Mobile-first Streamlit app que lê e grava a planilha cadastro.xlsx no Google Drive.
 
 Setup (igual ao app de cadastro):
   1. Secrets:
-       GITHUB_RAW_URL         → link de download da planilha crianças.xlsx
-       GDRIVE_FILE_ID         → ID do arquivo crianças.xlsx no Google Drive
+       GITHUB_RAW_URL         → link de download da planilha cadastro.xlsx
+       GDRIVE_FILE_ID         → ID do arquivo cadastro.xlsx no Google Drive
        GDRIVE_SA_CREDENTIALS  → JSON da service account (com acesso de edição)
   2. Deploy no Streamlit Community Cloud.
 
@@ -33,7 +33,7 @@ try:
 except Exception:
     GITHUB_RAW_URL = (
         "https://github.com/kauemelo01/Cadastro-PS-PSB/raw/refs/heads/main/"
-        "crian%C3%A7as.xlsx"
+        "cadastro.xlsx"
     )
 
 # Nomes das colunas (a busca no cabeçalho ignora acentos e maiúsculas)
@@ -623,11 +623,11 @@ with st.spinner("Carregando crianças…"):
     df, load_error = load_data(GITHUB_RAW_URL)
 
 if load_error or df is None:
-    st.error("❌ Não foi possível carregar o arquivo crianças.xlsx.")
+    st.error("❌ Não foi possível carregar o arquivo cadastro.xlsx.")
     st.markdown(
         """
 **Possíveis causas:**
-- O link do arquivo (`GITHUB_RAW_URL`) ainda não aponta para crianças.xlsx.
+- O link do arquivo (`GITHUB_RAW_URL`) ainda não aponta para cadastro.xlsx.
 - O arquivo não existe ou não está compartilhado.
 - Problema de rede.
 """
