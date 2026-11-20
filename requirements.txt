@@ -1,6 +1,19 @@
-streamlit>=1.50
-pandas
-openpyxl
-requests
-google-api-python-client
-google-auth
+# Pastoral Social — Consulta de Cadastro
+# Requer Python 3.10+ (o código usa anotações do tipo "str | None").
+
+# ── Interface ──
+# 1.39 é o piso real, não folga:
+#   st.dialog e st.fragment(run_every=...)  -> 1.37
+#   st.rerun(scope="app")                   -> 1.37
+#   classe CSS .st-key-<key>                -> 1.39  (estiliza o link discreto
+#                                                     de acesso administrativo)
+streamlit>=1.39
+
+# ── Leitura e manipulação dos dados ──
+pandas>=2.0
+openpyxl>=3.1          # leitura/escrita do .xlsx, usado direto e pelo pandas
+requests>=2.31         # download do arquivo publicado no Drive
+
+# ── Gravação no Google Drive (conta de serviço) ──
+google-auth>=2.23
+google-api-python-client>=2.100
