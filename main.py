@@ -9,7 +9,7 @@ Setup (igual ao app de cadastro):
        GDRIVE_SA_CREDENTIALS  → JSON da service account (com acesso de edição)
   2. Deploy no Streamlit Community Cloud.
 
-Estrutura esperada da planilha (1ª aba, cabeçalho na linha 1):
+Estrutura esperada da planilha (aba "Lista Ordenada", cabeçalho na linha 1):
   Nº Família / Carteirinha | Beneficiário (Cesta) | Nome da criança | Sexo | Idade | Observações
   As colunas "Padrinho" e "Telefone Padrinho" são criadas automaticamente
   no primeiro salvamento, caso ainda não existam.
@@ -45,6 +45,9 @@ COL_IDADE    = "Idade"
 COL_OBS      = "Observações"
 COL_PADRINHO = "Padrinho"
 COL_TEL      = "Telefone Padrinho"
+
+# Aba usada pelo app (as demais abas da planilha são ignoradas)
+SHEET_NAME = "Lista Ordenada"
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -277,6 +280,14 @@ def _fetch_gdrive(url: str) -> bytes:
     return resp.content
 
 
+def _find_sheet(names: list[str]) -> str | None:
+    """Nome real da aba SHEET_NAME (tolera diferença de acento/maiúscula/espaços)."""
+    for n in names:
+        if _norm(n) == _norm(SHEET_NAME):
+            return n
+    return None
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_data(url: str):
     """Retorna (df, erro). df tem colunas padronizadas + '_row' (linha no xlsx, 1-based)."""
@@ -286,7 +297,12 @@ def load_data(url: str):
         return None, str(exc)
 
     try:
-        raw = pd.read_excel(BytesIO(content), sheet_name=0, header=None, dtype=str)
+        xls = pd.ExcelFile(BytesIO(content))
+        sheet = _find_sheet(xls.sheet_names)
+        if sheet is None:
+            return None, (f"Aba '{SHEET_NAME}' não encontrada. "
+                          f"Abas disponíveis: {', '.join(xls.sheet_names)}")
+        raw = pd.read_excel(xls, sheet_name=sheet, header=None, dtype=str)
     except Exception as exc:
         return None, str(exc)
 
@@ -350,7 +366,10 @@ def patch_padrinho(wb, row_hint: int, numero: str, crianca: str,
     """Grava Padrinho/Telefone na linha da criança dentro do workbook aberto.
     A linha é localizada por Nº + nome da criança (não só pela posição),
     para que linhas reordenadas não levem a gravar na criança errada."""
-    ws = wb.worksheets[0]
+    sheet = _find_sheet(wb.sheetnames)
+    if sheet is None:
+        return f"Aba '{SHEET_NAME}' não encontrada na planilha. Nenhum dado foi alterado."
+    ws = wb[sheet]
     last_col = max((c.column for c in ws[1] if clean(c.value)), default=0)
     headers = [clean(ws.cell(row=1, column=c).value) for c in range(1, last_col + 1)]
 

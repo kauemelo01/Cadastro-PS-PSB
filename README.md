@@ -22,7 +22,7 @@ App web (Streamlit), pensado para celular, para cadastrar padrinhos das criança
 
 ## Estrutura da planilha
 
-O app usa a **primeira aba** de `cadastro.xlsx`, com cabeçalho na linha 1:
+O app usa sempre a aba **`Lista Ordenada`** de `cadastro.xlsx` (outras abas são ignoradas), com cabeçalho na linha 1:
 
 | Coluna | Cabeçalho                  | Observação                                   |
 |--------|----------------------------|----------------------------------------------|
