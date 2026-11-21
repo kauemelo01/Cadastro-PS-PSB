@@ -1,166 +1,170 @@
-# 📋 Pastoral Social — Consulta de Cadastro
+# 📋 Pastoral Social — Registry Lookup
 
-Aplicativo mobile para consulta e gestão do cadastro de beneficiários da Pastoral
-Social, construído com **Streamlit**. Lê e grava um arquivo `.xlsx` hospedado no
-**Google Drive**, que permanece a fonte da verdade.
+A mobile app for looking up and managing the beneficiary registry of the Pastoral
+Social (a parish community charity), built with **Streamlit**. It reads and writes
+an `.xlsx` file hosted on **Google Drive**, which remains the source of truth.
+
+The app's interface is in Portuguese; button labels, sheet names and column headers
+are quoted below exactly as they appear in the app and in the spreadsheet.
 
 ---
 
-## 🔍 Busca
+## 🔍 Search
 
-| Funcionalidade | Descrição |
+| Feature | Description |
 |---|---|
-| **Duas barras de busca** | Uma dedicada ao número do registro, outra para os demais campos |
-| **Busca por número** | Correspondência **exata** — buscar "1" retorna apenas o registro nº 1 |
-| **Busca geral** | Nome, CPF, Reserva 1, CPF Reserva 1, Reserva 2 e CPF Reserva 2 |
-| **Lógica OR** | As duas barras podem ser usadas ao mesmo tempo; o resultado é a união |
-| **Busca parcial** | Funciona com fragmentos ("silva", "maria") |
-| **Insensível a acentos** | "Antonio" encontra "Antônio" e vice-versa |
-| **Insensível a pontuação de CPF** | "06904914840" encontra "069.049.148-40" e vice-versa |
-| **Destaque das correspondências** | Os termos buscados são realçados em amarelo nos campos exibidos |
-| **Prioridade nos resultados** | Correspondências em Nome ou CPF aparecem primeiro |
+| **Two search bars** | One for the record number, another for every other field |
+| **Number search** | **Exact** match: searching "1" returns only record no. 1 |
+| **General search** | Name, CPF, Reserva 1, CPF Reserva 1, Reserva 2 and CPF Reserva 2 |
+| **OR logic** | Both bars can be used at once; the result is the union |
+| **Partial search** | Works with fragments ("silva", "maria") |
+| **Accent-insensitive** | "Antonio" finds "Antônio" and vice versa |
+| **Ignores CPF punctuation** | "12345678909" finds "123.456.789-09" and vice versa |
+| **Match highlighting** | Search terms are highlighted in yellow in the displayed fields |
+| **Result priority** | Matches on Name or CPF come first |
 
-Na busca por número, o destaque aparece somente no cabeçalho do número, para não
-sugerir que o registro casou por outro campo. O nome das crianças não é realçado,
-já que a coluna de crianças não é um campo de busca.
+In a number search, only the number in the card header is highlighted, so it doesn't
+suggest the record matched on another field. Children's names are not highlighted,
+because the children column is not a searchable field.
+
+> CPF is the Brazilian individual taxpayer ID. *Reserva 1* and *Reserva 2* are the
+> alternate people authorized to collect a beneficiary's food basket.
 
 ---
 
-## 📇 Exibição dos registros
+## 📇 Record display
 
-| Funcionalidade | Descrição |
+| Feature | Description |
 |---|---|
-| **Cabeçalho do card** | Nome, Nº e CPF |
-| **Campos Tier 1** | Tipo, Status, CID 2026, Reserva 1, CPF Res. 1, Reserva 2, CPF Res. 2 |
-| **Alerta para a Mesa** | Em vermelho e com fonte ligeiramente maior quando presente |
-| **Histórico de entregas** | Grade compacta de 6 colunas; célula verde para o mês entregue, cinza para os demais |
-| **Crianças** | Chips com emoji por sexo (👧 / 👦 / 🧒), nome e idade — aparece só quando há crianças |
-| **Modo escuro** | Paleta própria para tema escuro, incluindo os campos de busca |
-| **Mobile-first** | Layout otimizado para telas pequenas |
+| **Card header** | Name, number and CPF |
+| **Tier 1 fields** | Tipo, Status, CID 2026, Reserva 1, CPF Res. 1, Reserva 2, CPF Res. 2 |
+| **Alerta para a Mesa** (front-desk alert) | In red and in a slightly larger font, when present |
+| **Delivery history** | Compact 6-column grid; green cell for months delivered, grey for the rest |
+| **Children** | Chips with an emoji by sex (👧 / 👦 / 🧒), name and age; shown only when there are children |
+| **Dark mode** | Its own dark palette, search fields included |
+| **Mobile-first** | Layout optimized for small screens |
 
 ---
 
-## ✏️ Edição
+## ✏️ Editing
 
-### Disponível para todos
+### Available to everyone
 
-| Funcionalidade | Descrição |
+| Feature | Description |
 |---|---|
-| **Marcar entrega do mês** | Registra "OK" no mês corrente, com popup de confirmação. Fica desabilitado quando já entregue |
-| **Cadastrar Criança** | Nome, sexo, idade e observação. Aparece quando o registro não tem crianças |
-| **Editar Crianças (N)** | Carrega as crianças cadastradas para editar, remover ou acrescentar — tudo numa única gravação |
+| **Mark this month's delivery** | Writes "OK" in the current month, after a confirmation popup. Disabled once delivered |
+| **Cadastrar Criança** (add child) | Name, sex, age and a note. Shown when the record has no children |
+| **Editar Crianças (N)** (edit children) | Loads the registered children to edit, remove or add more, all in a single save |
 
-### Exclusivo do modo administrador
+### Admin mode only
 
-| Funcionalidade | Descrição |
+| Feature | Description |
 |---|---|
-| **Editar Dados** | Tipo e Status (listas suspensas), CID 2026, Reserva 1 e 2, CPF das reservas e Alerta para a Mesa |
+| **Editar Dados** (edit details) | Tipo and Status (drop-down lists), CID 2026, Reserva 1 and 2, the alternates' CPFs and Alerta para a Mesa |
 
-Somente os campos efetivamente alterados são gravados, e o botão Salvar fica
-desabilitado quando nada mudou.
+Only the fields that actually changed are written, and the Save button stays disabled
+while nothing has changed.
 
 ---
 
-## 🧺 Cestas Extras (exclusivo do administrador)
+## 🧺 Extra baskets (admin only)
 
-| Funcionalidade | Descrição |
+| Feature | Description |
 |---|---|
-| **Dar Cesta Extra** | Número sequencial pré-preenchido e editável; Número, Nome e Motivo obrigatórios |
-| **Lista de Cestas Extras** | Tela própria com todos os registros, contagem de entregues e pendentes |
-| **Marcar como entregue** | Com popup de confirmação; grava na coluna ENTREGUE |
-| **Propagação instantânea** | Uma cesta lançada num dispositivo aparece nos outros em segundos, sem releitura do Drive |
-| **Indicador de sincronização** | Mostra se há gravações em andamento e o horário da última sincronização |
-| **Recarregar do Drive** | Puxa alterações feitas diretamente na planilha |
-| **Recuperação de falhas** | Se a gravação falhar, o dado permanece visível e há botão para tentar novamente |
+| **Dar Cesta Extra** (give an extra basket) | Sequential number pre-filled and editable; Number, Name and Reason are required |
+| **Extra basket list** | A screen of its own with every record and counts of delivered and pending baskets |
+| **Mark as delivered** | With a confirmation popup; writes to the ENTREGUE column |
+| **Instant propagation** | A basket entered on one device shows up on the others within seconds, without re-reading Drive |
+| **Sync indicator** | Shows whether saves are in progress and the time of the last sync |
+| **Reload from Drive** | Pulls in changes made directly in the spreadsheet |
+| **Failure recovery** | If a save fails, the data stays visible and there is a button to retry |
 
-As cestas extras vivem na aba `Sheet2` e são independentes do cadastro principal.
-
----
-
-## 🔐 Modo administrador
-
-Um link discreto no rodapé abre a solicitação de senha, lida dos *Secrets* do app.
-Enquanto a senha não estiver configurada, o acesso administrativo fica indisponível
-em vez de liberado. Ao sair do modo administrador, telas restritas são fechadas
-automaticamente.
-
-Vale registrar o alcance dessa proteção: ela organiza quem faz o quê, mas não é uma
-barreira de segurança — a senha vive no processo do app e não há limite de
-tentativas. O que realmente protege os dados são as credenciais da conta de serviço
-do Drive, que ficam apenas no servidor.
+Extra baskets live on the `Sheet2` tab and are independent of the main registry.
 
 ---
 
-## 💾 Gravação e integridade
+## 🔐 Admin mode
 
-Toda alteração vai para o `.xlsx` no Google Drive através de uma conta de serviço.
-Como cada gravação reenvia o arquivo inteiro, o app adota algumas salvaguardas:
+A discreet link in the footer asks for the password, which is read from the app's
+*Secrets*. Until a password is configured, admin access is unavailable rather than
+open. Leaving admin mode closes any restricted screens automatically.
 
-- **Escrita serializada** — um bloqueio único no processo garante que dois
-  salvamentos simultâneos não sobrescrevam um ao outro.
-- **Endereçamento por conteúdo** — a linha é localizada pelo NÚMERO e a coluna pelo
-  nome do cabeçalho, sempre no arquivo recém-baixado. Posições fixas não são usadas,
-  porque uma linha ou coluna inserida na planilha deslocaria todas as seguintes.
-- **Recusa em caso de ambiguidade** — se o número não for encontrado, ou houver mais
-  de um registro com o mesmo número, nada é alterado e o motivo é exibido.
-- **Concorrência otimista nas crianças** — como a edição substitui a lista inteira,
-  o salvamento é recusado se outra pessoa alterou a lista nesse intervalo.
-- **Gravação antes da tela** — a interface só reflete a alteração depois que o Drive
-  confirma, para nunca mostrar como salvo algo que falhou.
-- **Cestas extras assíncronas** — o clique responde na hora e a gravação segue em
-  segundo plano, agrupando alterações pendentes numa única ida ao Drive.
-- **Duplo carimbo de tempo** — cada alteração registra quando foi salva no app e
-  quando chegou à planilha; a diferença revela espera de rede.
+It's worth being clear about what this protects: it organizes who does what, but it
+is not a security barrier. The password lives in the app process and there is no
+limit on attempts. What really protects the data are the Drive service-account
+credentials, which stay on the server only.
 
 ---
 
-## 🗂️ Estrutura do arquivo `.xlsx`
+## 💾 Saving and data integrity
 
-### Aba 1 — cadastro
+Every change goes to the `.xlsx` on Google Drive through a service account. Because
+each save re-uploads the whole file, the app uses a few safeguards:
 
-Duas linhas de cabeçalho:
+- **Serialized writes**: a single lock in the process ensures two simultaneous saves
+  don't overwrite each other.
+- **Content-based addressing**: the row is found by NUMERO and the column by its
+  header name, always in the freshly downloaded file. Fixed positions are never used,
+  because a row or column inserted into the spreadsheet would shift everything after it.
+- **Refusal when ambiguous**: if the number isn't found, or more than one record has
+  the same number, nothing is changed and the reason is shown.
+- **Optimistic concurrency for children**: since an edit replaces the whole list, the
+  save is refused if someone else changed the list in the meantime.
+- **Write before display**: the screen reflects a change only after Drive confirms it,
+  so it never shows as saved something that failed.
+- **Asynchronous extra baskets**: the click responds immediately and the write
+  continues in the background, batching pending changes into a single trip to Drive.
+- **Double timestamp**: each change records when it was saved in the app and when it
+  reached the spreadsheet; the gap reveals network waits.
 
-| Linha | Conteúdo |
+---
+
+## 🗂️ `.xlsx` file layout
+
+### Tab 1 — registry
+
+Two header rows:
+
+| Row | Content |
 |---|---|
-| Linha 1 | Tags: `SEARCH`, `Tier 1` ou `Tier 2` |
-| Linha 2 | Nomes das colunas |
-| Linha 3+ | Dados dos registros |
+| Row 1 | Tags: `SEARCH`, `Tier 1` or `Tier 2` |
+| Row 2 | Column names |
+| Row 3+ | Record data |
 
-**Campos `SEARCH`** (buscáveis): NUMERO, CPF, NOME, RESERVA 1, CPF RESERVA 1,
+**`SEARCH` fields** (searchable): NUMERO, CPF, NOME, RESERVA 1, CPF RESERVA 1,
 RESERVA 2, CPF RESERVA 2
 
-**Campos `Tier 1`** (visíveis no card): TIPO, CID 2026, STATUS,
-ALERTA PARA A MESA e as colunas mensais de entrega
+**`Tier 1` fields** (shown on the card): TIPO, CID 2026, STATUS,
+ALERTA PARA A MESA and the monthly delivery columns
 
-**Campos `Tier 2`** (não exibidos): endereço, telefone, observações internas e as
-três colunas de uso interno do app
+**`Tier 2` fields** (not shown): address, phone, internal notes and the app's three
+internal columns
 
-As colunas mensais devem ser **datas reais** na linha 2 — o app as exibe como
-`Mmm/AA` (ex.: `Mar/26`) e usa o mês corrente para liberar o botão de entrega.
+The monthly columns must be **real dates** in row 2. The app shows them as `Mmm/YY`
+(e.g. `Mar/26`) and uses the current month to enable the delivery button.
 
-### Colunas de uso interno
+### Internal columns
 
-| Cabeçalho | Conteúdo |
+| Header | Content |
 |---|---|
-| `CRIANÇAS` | JSON com a lista de crianças do registro |
-| `Salvo no App` | Momento em que o usuário confirmou o salvamento |
-| `Gravado na Planilha` | Momento em que a planilha foi efetivamente gravada |
+| `CRIANÇAS` | JSON with the record's list of children |
+| `Salvo no App` | When the user confirmed the save |
+| `Gravado na Planilha` | When the spreadsheet was actually written |
 
-O app localiza essas três pelo nome do cabeçalho e também aceita os nomes
-anteriores (`Última Alteração`, `Alterado Por:`, `Motivo da Alteração`), para que
-renomear a planilha e publicar o código não precisem acontecer ao mesmo tempo.
+The app finds these three by header name and also accepts their previous names
+(`Última Alteração`, `Alterado Por:`, `Motivo da Alteração`), so renaming the
+spreadsheet columns and publishing the code don't have to happen at the same time.
 
-### Formato do JSON de crianças
+### Children JSON format
 
 ```json
 {"criancas":[{"NÚMERO":"15","NOME":"Ana","SEXO":"Feminino","IDADE":8,"OBS":""}]}
 ```
 
-Campos adicionais presentes no JSON são preservados nas edições feitas pelo app,
-mesmo não aparecendo no formulário. Uma célula com conteúdo inválido é tratada como
-"sem crianças" na exibição, e o salvamento é recusado para não sobrescrevê-la.
+Extra fields in the JSON are preserved by edits made in the app, even though they
+don't appear in the form. A cell with invalid content is treated as "no children"
+for display, and saving is refused so it isn't overwritten.
 
-### Aba 2 — cestas extras
+### Tab 2 — extra baskets
 
-Cabeçalho na primeira linha: `NÚMERO`, `NOME`, `CPF`, `TELEFONE`, `MOTIVO`,
-`ENTREGUE`.
+Header in the first row: `NÚMERO`, `NOME`, `CPF`, `TELEFONE`, `MOTIVO`, `ENTREGUE`.
