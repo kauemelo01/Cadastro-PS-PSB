@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pastoral Social</title>
+  <meta name="description" content="Consulta de Cadastro — Pastoral Social Jardim Colombo">
+  <meta name="theme-color" content="#1b5e20">
+
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Cadastro">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+
+  <style>
+    html, body { margin: 0; height: 100%; background: #fff; }
+    body { display: flex; flex-direction: column; height: 100dvh;
+           font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+
+    #install-bar { display: none; align-items: center; gap: .5rem; padding: .45rem .75rem;
+                   background: linear-gradient(135deg, #1b5e20 0%, #388e3c 100%); color: #fff;
+                   font-size: .9rem; }
+    #install-bar.show { display: flex; }
+    #install-bar span { flex: 1; }
+    #install-btn { border: 0; border-radius: 999px; padding: .4rem .9rem; font: inherit;
+                   font-weight: 600; background: #fff; color: #1b5e20; cursor: pointer; }
+    #install-close { border: 0; background: none; color: #fff; font-size: 1.1rem;
+                     padding: .2rem .4rem; cursor: pointer; }
+
+    #ios-help { display: none; padding: .6rem .9rem .8rem; background: #f1f8e9; color: #212121;
+                font-size: .9rem; border-bottom: 1px solid #c5e1a5; }
+    #ios-help.show { display: block; }
+    #ios-help ol { margin: .3rem 0 0; padding-left: 1.2rem; }
+
+    iframe { flex: 1; width: 100%; border: 0; display: block; }
+  </style>
+</head>
+<body>
+  <div id="install-bar" role="region" aria-label="Instalar o app">
+    <span>Use como app no celular</span>
+    <button id="install-btn" type="button">📲 Instalar app</button>
+    <button id="install-close" type="button" aria-label="Fechar">✕</button>
+  </div>
+  <div id="ios-help">
+    <strong>No iPhone / iPad (Safari):</strong>
+    <ol>
+      <li>Toque em <strong>Compartilhar</strong> (o quadrado com a seta ⬆️).</li>
+      <li>Escolha <strong>Adicionar à Tela de Início</strong> e toque em <strong>Adicionar</strong>.</li>
+    </ol>
+  </div>
+
+  <iframe src="https://cadastro-ps-psb.streamlit.app/?embed=true"
+          title="Pastoral Social" allow="clipboard-write"></iframe>
+
+  <script>
+    (function () {
+      var bar = document.getElementById("install-bar");
+      var btn = document.getElementById("install-btn");
+      var help = document.getElementById("ios-help");
+      var KEY = "pwa-install-dismissed";
+
+      var ua = navigator.userAgent;
+      var isIOS = /iPhone|iPad|iPod/.test(ua);
+      var isAndroid = /Android/.test(ua);
+      var installed = window.matchMedia("(display-mode: standalone)").matches ||
+                      window.navigator.standalone === true;
+      var dismissed = false;
+      try { dismissed = localStorage.getItem(KEY) === "1"; } catch (e) {}
+
+      // Só no celular, fora do app já instalado, e se o usuário não fechou a barra.
+      var eligible = (isIOS || isAndroid) && !installed && !dismissed;
+      var deferred = null;
+
+      function hide() { bar.classList.remove("show"); help.classList.remove("show"); }
+
+      // Android/Chrome: guarda o pedido de instalação e mostra o botão.
+      window.addEventListener("beforeinstallprompt", function (e) {
+        e.preventDefault();
+        deferred = e;
+        if (eligible && isAndroid) bar.classList.add("show");
+      });
+      window.addEventListener("appinstalled", hide);
+
+      // iPhone: não existe instalação por código; o botão mostra o passo a passo.
+      if (eligible && isIOS) bar.classList.add("show");
+
+      btn.addEventListener("click", function () {
+        if (deferred) {
+          deferred.prompt();
+          deferred.userChoice.then(function (r) {
+            if (r.outcome === "accepted") hide();
+            deferred = null;
+          });
+        } else if (isIOS) {
+          help.classList.toggle("show");
+        }
+      });
+
+      document.getElementById("install-close").addEventListener("click", function () {
+        hide();
+        try { localStorage.setItem(KEY, "1"); } catch (e) {}
+      });
+
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("sw.js").catch(function () {});
+      }
+    })();
+  </script>
+</body>
+</html>
