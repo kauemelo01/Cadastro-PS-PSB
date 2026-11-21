@@ -1097,6 +1097,36 @@ def _apply_deliver(ws, numero: str) -> str | None:
     return None
 
 
+def _rollback_job(store: dict, job: dict) -> bool:
+    """
+    Undo a job's optimistic in-memory change after the sheet refused it.
+    Caller must hold store["lock"]. Returns True if something was undone.
+
+    The point is to keep the screen honest: whatever the spreadsheet rejected
+    must stop looking saved, so the operator can see it and act again.
+    """
+    if job["op"] == "deliver":
+        numero = str(job["numero"]).strip()
+        for r in store["rows"]:
+            if r.get("NÚMERO", "").strip() == numero:
+                r[EXTRAS_DONE_HEADER] = job.get("prev", "")
+                return True
+        return False
+
+    if job["op"] == "append":
+        record = job["record"]
+        for i, r in enumerate(store["rows"]):
+            # Identity first: the queued record IS the dict that was appended.
+            # A re-sync may have replaced the list, in which case there is
+            # nothing of ours left to undo.
+            if r is record:
+                store["rows"].pop(i)
+                return True
+        return False
+
+    return False
+
+
 def _flush_jobs(store: dict, jobs: list[dict]) -> None:
     """
     Apply a batch of jobs to the Drive file in ONE download/upload cycle.
@@ -1105,7 +1135,7 @@ def _flush_jobs(store: dict, jobs: list[dict]) -> None:
     service = _build_drive_service(store["sa_info"])
     file_id = store["file_id"]
 
-    soft_errors: list[str] = []
+    soft_errors: list[tuple[dict, str]] = []
     # Same lock as the synchronous writers: an edit saved from another screen
     # mid-cycle would otherwise be reverted by this upload, or revert it.
     with get_drive_lock():
@@ -1116,11 +1146,11 @@ def _flush_jobs(store: dict, jobs: list[dict]) -> None:
                 if job["op"] == "append":
                     err = _apply_append(ws, job["record"])
                     if err:
-                        soft_errors.append(err)
+                        soft_errors.append((job, err))
                 elif job["op"] == "deliver":
                     err = _apply_deliver(ws, job["numero"])
                     if err:
-                        soft_errors.append(err)
+                        soft_errors.append((job, err))
             _upload_workbook(service, file_id, wb)
         finally:
             wb.close()
@@ -1128,10 +1158,22 @@ def _flush_jobs(store: dict, jobs: list[dict]) -> None:
     # These are not network failures — the upload succeeded, but a record
     # could not be located in the sheet. Retrying would fail identically, so
     # they are counted separately and always surfaced rather than queued.
+    #
+    # The optimistic in-memory change MUST be undone here. Without the
+    # rollback the screen would keep showing a cesta as delivered while the
+    # spreadsheet has nothing — and the Confirmar button would be gone, so
+    # nobody could try again or even notice which record failed.
     if soft_errors:
         with store["lock"]:
-            store["errors"].extend(soft_errors)
+            for job, err in soft_errors:
+                if not _rollback_job(store, job):
+                    store["errors"].append(err)
+                elif job["op"] == "append":
+                    store["errors"].append(err + " A cesta saiu da lista.")
+                else:
+                    store["errors"].append(err + " A marcação foi desfeita na tela.")
             store["stale"] += len(soft_errors)
+            store["version"] += 1
 
 
 def _extras_worker(store: dict) -> None:
@@ -1302,14 +1344,18 @@ def extras_add(record: dict) -> str | None:
 def extras_mark_delivered(numero: str) -> None:
     """Flag a record as delivered in memory, then queue the Drive write."""
     store = get_extras_store()
+    prev = ""
     with store["lock"]:
         for r in store["rows"]:
             if r.get("NÚMERO", "").strip() == str(numero).strip():
+                # Kept so the flag can be undone if the sheet refuses it.
+                prev = r.get(EXTRAS_DONE_HEADER, "")
                 r[EXTRAS_DONE_HEADER] = "OK"
                 break
         store["version"] += 1
 
-    _enqueue(store, {"op": "deliver", "numero": str(numero).strip()})
+    _enqueue(store, {"op": "deliver", "numero": str(numero).strip(),
+                     "prev": prev})
 
 
 def extras_retry_failed() -> int:
@@ -2108,8 +2154,9 @@ def _render_extras_list() -> None:
     if status["stale"]:
         st.warning(
             f"⚠️ {status['stale']} alteração(ões) não puderam ser aplicadas "
-            "na planilha (registro não encontrado na aba). A tela e o Drive "
-            "podem estar divergentes — use 🔄 Drive para recarregar."
+            "na planilha (registro não encontrado ou duplicado na aba). "
+            "A tela foi desfeita para refletir a planilha — veja o motivo "
+            "abaixo, corrija a aba e repita a ação."
         )
 
     for e in status["errors"]:
