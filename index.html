@@ -65,7 +65,8 @@
       var ua = navigator.userAgent;
       var isIOS = /iPhone|iPad|iPod/.test(ua);
       var isAndroid = /Android/.test(ua);
-      var installed = window.matchMedia("(display-mode: standalone)").matches ||
+      var installed = window.matchMedia("(display-mode: fullscreen)").matches ||
+                    window.matchMedia("(display-mode: standalone)").matches ||
                       window.navigator.standalone === true;
       var dismissed = false;
       try { dismissed = localStorage.getItem(KEY) === "1"; } catch (e) {}

@@ -5,7 +5,7 @@
   "lang": "pt-BR",
   "start_url": "./",
   "scope": "./",
-  "display": "standalone",
+  "display": "fullscreen",
   "orientation": "portrait",
   "background_color": "#ffffff",
   "theme_color": "#1b5e20",
