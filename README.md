@@ -78,6 +78,7 @@ while nothing has changed.
 | **Sync indicator** | Shows whether saves are in progress and the time of the last sync |
 | **Reload from Drive** | Pulls in changes made directly in the spreadsheet |
 | **Failure recovery** | If a save fails, the data stays visible and there is a button to retry |
+| **Undo when the sheet refuses** | If the spreadsheet rejects a change (a new basket whose number already exists on the tab, or a delivery whose number is missing or duplicated), the screen is rolled back to match the sheet: the basket leaves the list, or the delivered mark is removed. The reason is shown so the tab can be fixed and the action repeated |
 
 Extra baskets live on the `Sheet2` tab and are independent of the main registry.
 
