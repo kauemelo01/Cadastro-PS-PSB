@@ -1,4 +1,4 @@
-# 📋 Pastoral Social — Cadastro — installable app (PWA wrapper)
+# 📋 Cadastro — installable app (PWA wrapper)
 
 This branch holds the small static site that lets volunteers **install the
 [Cadastro-PS-PSB](https://github.com/kauemelo01/Cadastro-PS-PSB) Streamlit app on their phones**,
