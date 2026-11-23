@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets (Streamlit reads them from the Cloud settings, never from the repo)
+.streamlit/secrets.toml
+.env
+
+# Editors
+.idea/
+*.swp
+*~
+
+# OS noise (Windows download marks, macOS, Windows)
+*Zone.Identifier
+.DS_Store
+Thumbs.db
+desktop.ini
